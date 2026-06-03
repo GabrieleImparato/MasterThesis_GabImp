@@ -1,0 +1,45 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.bcf
+*.fls
+*.fdb_latexmk
+*.dvi
+*.xdv
+*.out
+*.log
+*.synctex.gz
+*.run.xml
+*.toc
+*.lof
+*.lot
+*.idx
+*.ind
+*.ilg
+*.tgz
+*.zip
+
+# busy file
+*.synctex(busy)
+
+# PDF (uncomment if you don't want to track PDFs)
+*.pdf
+
+# Biber/BibTeX
+*.bib.bak
+
+# IDE and editor files
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+.gitkeep
+
+# Temporary files
+*.tmp
+*.bak
