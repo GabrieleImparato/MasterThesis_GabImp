@@ -8,7 +8,7 @@ from Model.ColoredPetriNet import ColoredPetriNet
 
 def build_app():
     root = tk.Tk()
-    root.title("PyPN Simple CPN Editor")
+    root.title("PyPN")
     root.geometry("1000x700")
 
     net = ColoredPetriNet()
