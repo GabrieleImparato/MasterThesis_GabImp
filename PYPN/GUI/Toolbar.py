@@ -12,6 +12,7 @@ class Toolbar(tk.Frame):
         tk.Button(self, text="Add transition", command=lambda: self.canvas.set_mode("transition"), width=12).pack(padx=4, pady=4)
         tk.Button(self, text="Add arc", command=lambda: self.canvas.set_mode("arc"), width=12).pack(padx=4, pady=4)
         tk.Button(self, text="Fire transition", command=self.fire_transition, width=12).pack(padx=4, pady=4)
+        tk.Button(self, text="Delete selected", command=self.delete_selected, width=12).pack(padx=4, pady=4)
         tk.Button(self, text="Reset", command=self.reset_canvas, width=12).pack(padx=4, pady=4)
 
     def fire_transition(self):
@@ -27,6 +28,9 @@ class Toolbar(tk.Frame):
                 self.canvas.inspector.show_message(f"Transition {node.obj.name} is not enabled")
         except Exception as exc:
             self.canvas.inspector.show_message(str(exc))
+
+    def delete_selected(self):
+        self.canvas.delete_selected_node()
 
     def reset_canvas(self):
         self.canvas.delete("all")

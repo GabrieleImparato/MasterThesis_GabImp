@@ -32,6 +32,17 @@ class ColoredPetriNet:
         self.arcs.append(arc)
         return arc
 
+    def remove_arc_by_objects(self, start, end):
+        self.arcs = [arc for arc in self.arcs if not (arc.start is start and arc.end is end)]
+
+    def remove_place(self, place):
+        self.places = [p for p in self.places if p is not place]
+        self.arcs = [arc for arc in self.arcs if arc.start is not place and arc.end is not place]
+
+    def remove_transition(self, transition):
+        self.transitions = [t for t in self.transitions if t is not transition]
+        self.arcs = [arc for arc in self.arcs if arc.start is not transition and arc.end is not transition]
+
     def add_token(self, place, color, n=1):
         place.add_token(color, n)
 
