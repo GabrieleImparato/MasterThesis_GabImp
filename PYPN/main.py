@@ -24,6 +24,7 @@ def build_app():
     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
 
     toolbar.canvas = canvas
+    canvas.toolbar = toolbar
     inspector.update_status("Ready")
 
     return root

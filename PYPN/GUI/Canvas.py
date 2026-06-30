@@ -154,6 +154,7 @@ class NetCanvas(tk.Canvas):
         super().__init__(parent, bg="white", highlightthickness=1, highlightbackground="#999", **kwargs)
         self.net = net
         self.inspector = inspector
+        self.toolbar = None
         self.nodes = []
         self.arcs = []
         self.mode = "select"
@@ -165,12 +166,26 @@ class NetCanvas(tk.Canvas):
         self.bind("<Double-Button-1>", self.on_double_click)
         self.bind("<Delete>", self.delete_selected_node)
         self.bind("<BackSpace>", self.delete_selected_node)
+        self.bind("<Configure>", lambda event: self.draw_grid())
+        self.draw_grid()
+
+    def draw_grid(self):
+        self.delete("grid")
+        width = self.winfo_width() or 700
+        height = self.winfo_height() or 650
+        for x in range(0, width, self.grid_size):
+            self.create_line(x, 0, x, height, fill="#e5e7eb", tags="grid")
+        for y in range(0, height, self.grid_size):
+            self.create_line(0, y, width, y, fill="#e5e7eb", tags="grid")
+        self.tag_lower("grid")
 
     def set_mode(self, mode):
         self.mode = mode
         self.pending_arc_source = None
-        self.selected_node = None
+        self.inspector.update_mode(mode.capitalize())
         self.inspector.update_status(f"Mode: {mode}")
+        if self.toolbar is not None:
+            self.toolbar.update_mode(mode)
 
     def find_node_at(self, x, y):
         hits = self.find_overlapping(x, y, x, y)
@@ -217,6 +232,7 @@ class NetCanvas(tk.Canvas):
         self.delete(node.shape_id)
         self.delete(node.label_id)
         self.nodes.remove(node)
+        self.update_selection_visuals()
 
         if node.node_type == "place":
             self.net.remove_place(node.obj)
@@ -255,6 +271,8 @@ class NetCanvas(tk.Canvas):
 
         if self.mode == "select":
             self.select_node(node)
+        elif node is None:
+            self.select_node(None)
 
     def on_double_click(self, event):
         node = self.find_node_at(event.x, event.y)
@@ -265,8 +283,16 @@ class NetCanvas(tk.Canvas):
         self.select_node(node)
         NodeEditDialog(self, self, node)
 
+    def update_selection_visuals(self):
+        for node in self.nodes:
+            if node is self.selected_node:
+                self.itemconfig(node.shape_id, outline="#2563eb", width=3)
+            else:
+                self.itemconfig(node.shape_id, outline="#333", width=2)
+
     def select_node(self, node):
         self.selected_node = node
+        self.update_selection_visuals()
         if node is None:
             self.inspector.show_message("No node selected")
             return
