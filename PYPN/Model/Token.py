@@ -1,6 +1,7 @@
 from .Color import Color
 from .Place import Place
 
+
 class Token:
     def __init__(self, color: Color, place: Place):
         self.color = color

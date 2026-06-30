@@ -136,6 +136,8 @@ class NodeEditDialog(tk.Toplevel):
 
         if self.canvas.selected_node is self.node:
             self.canvas.select_node(self.node)
+
+        self.canvas.update_place_labels()
         self.destroy()
 
 
@@ -306,6 +308,7 @@ class NetCanvas(tk.Canvas):
             tokens = node.obj.tokens
         self.inspector.show_node(node_type, name, tokens, enabled)
 
+    # Sostituisci il metodo create_place esistente con questo per includere (0) alla creazione
     def create_place(self, x, y):
         x, y = self.snap_point(x, y)
         if not self.can_place_node(x, y):
@@ -316,9 +319,55 @@ class NetCanvas(tk.Canvas):
         colors = [default_color] if default_color else None
         place = self.net.add_place(name, colors=colors)
         shape = self.create_oval(x - self.node_radius, y - self.node_radius, x + self.node_radius, y + self.node_radius, fill="#f8f8ff", outline="#333", width=2)
-        label = self.create_text(x, y, text=name)
+        
+        # Mostra sia il nome che il numero di token totali iniziali (0)
+        label = self.create_text(x, y, text=f"{name}\n(0)", justify="center")
+        
         self.nodes.append(NodeInfo(place, shape, label, "place", x, y))
         self.inspector.update_status(f"Created place {name}")
+        self.update_place_labels() # Forza l'aggiornamento reale dei token
+
+    # NUOVO METODO: Aggiorna il testo di tutti i posti mostrando i gettoni attuali
+    def update_place_labels(self):
+        for node in self.nodes:
+            if node.node_type == "place":
+                # Calcola la somma totale di tutti i token (di qualsiasi colore) nel posto
+                total_tokens = sum(node.obj.tokens.values()) if hasattr(node.obj, 'tokens') else 0
+                # Se la tua struttura usa un altro modo per contare, es: sum(node.obj.tokens.values())
+                # Adattalo se node.obj.tokens è un dizionario {colore: quantità}
+                if isinstance(node.obj.tokens, dict):
+                    total_tokens = sum(node.obj.tokens.values())
+                else:
+                    total_tokens = len(node.obj.tokens) # se fosse una lista
+                
+                self.itemconfigure(node.label_id, text=f"{node.obj.name}\n({total_tokens})")
+
+    # NUOVO METODO: Gestisce il flash rosso degli archi e aggiorna i testi dei gettoni
+    def animate_fire(self, transition_node):
+        # 1. Trova gli archi connessi alla transizione (in ingresso o in uscita)
+        involved_arcs = []
+        for arc_id, source, target in self.arcs:
+            if source is transition_node or target is transition_node:
+                involved_arcs.append(arc_id)
+                # Cambia il colore dell'arco in rosso
+                self.itemconfig(arc_id, fill="red", width=3)
+
+        # 2. Aggiorna i numeri di gettoni stampati sui nodi posto
+        self.update_place_labels()
+        
+        # Aggiorna anche l'inspector laterale se il nodo corrente è selezionato
+        if self.selected_node:
+            self.select_node(self.selected_node)
+
+        # 3. Dopo 500 millisecondi ripristina il colore nero originale degli archi
+        self.after(500, lambda: self.reset_arc_colors(involved_arcs))
+
+    # NUOVO METODO: Ripristina gli archi al colore nero di default
+    def reset_arc_colors(self, arc_ids):
+        for arc_id in arc_ids:
+            # Verifica che l'arco esista ancora (evita bug se viene cancellato nel frattempo)
+            if arc_id in self.find_all():
+                self.itemconfig(arc_id, fill="black", width=2)
 
     def create_transition(self, x, y):
         x, y = self.snap_point(x, y)

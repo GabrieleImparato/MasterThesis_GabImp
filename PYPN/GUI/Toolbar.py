@@ -82,6 +82,10 @@ class Toolbar(tk.Frame):
             if self.canvas.net.is_enabled(node.obj):
                 self.canvas.net.fire(node.obj)
                 self.canvas.inspector.show_message(f"Fired {node.obj.name}")
+                
+                # --- NUOVO: Avvia animazione archi e aggiorna i contatori dei gettoni ---
+                self.canvas.animate_fire(node)
+                
             else:
                 self.canvas.inspector.show_message(f"Transition {node.obj.name} is not enabled")
         except Exception as exc:
