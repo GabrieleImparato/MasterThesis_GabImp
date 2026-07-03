@@ -6,7 +6,7 @@ from Model.ColoredPetriNet import ColoredPetriNet
 class PetriNetTests(unittest.TestCase):
     def test_cycle_transfers_token_back_to_origin(self):
         net = ColoredPetriNet()
-        color = net.add_color("default")
+        color = net.get_color("black")
         p1 = net.add_place("p1", colors=[color])
         p2 = net.add_place("p2", colors=[color])
         t1 = net.add_transition("t1", colors=[color])
@@ -26,7 +26,7 @@ class PetriNetTests(unittest.TestCase):
 
     def test_remove_place_removes_associated_arcs(self):
         net = ColoredPetriNet()
-        color = net.add_color("default")
+        color = net.get_color("black")
         p1 = net.add_place("p1", colors=[color])
         t1 = net.add_transition("t1", colors=[color])
         net.add_arc(p1, t1, weight=1)

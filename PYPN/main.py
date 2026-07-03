@@ -12,7 +12,6 @@ def build_app():
     root.geometry("1000x700")
 
     net = ColoredPetriNet()
-    default_color = net.add_color("default")
 
     inspector = Inspector(root, width=240, height=180)
     inspector.pack(side=tk.RIGHT, fill=tk.Y)

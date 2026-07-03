@@ -1,4 +1,17 @@
-from enum import Enum
+PREDEFINED_COLOR_NAMES = (
+    "black",
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "orange",
+    "purple",
+    "pink",
+    "brown",
+    "gray",
+)
+DEFAULT_COLOR_NAME = PREDEFINED_COLOR_NAMES[0]
+
 
 class Color:
     def __init__(self, name):

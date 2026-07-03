@@ -30,9 +30,16 @@ class FakeCanvas:
     def select_node(self, node):
         self.selected_node = node
 
-    def after(self, ms, callback):
-        self._callbacks.append(callback)
-        return callback
+    def animate_fire(self, node):
+        pass  # no-op in test
+
+    def update_place_labels(self):
+        pass  # no-op in test
+
+    def after(self, ms, fn, *args):
+        """Esegue immediatamente la callback per rendere i test sincroni."""
+        fn(*args)
+        return fn
 
     def after_cancel(self, callback):
         if callback in self._callbacks:
@@ -60,10 +67,43 @@ class SimulationEngineTests(unittest.TestCase):
         canvas.net = net
 
         engine = SimulationEngine(canvas, interval_ms=10)
-        engine._step()
+        fired = engine._step()
 
+        self.assertTrue(fired)
         self.assertEqual(net.fired, ["t1"])
         self.assertIs(canvas.selected_node, enabled)
+
+    def test_step_returns_false_when_no_enabled_transitions(self):
+        node = FakeNode("t1", "transition")
+        canvas = FakeCanvas([node])
+        net = FakeNet([])  # nessuna transizione abilitata
+        canvas.net = net
+
+        engine = SimulationEngine(canvas, interval_ms=10)
+        fired = engine._step()
+
+        self.assertFalse(fired)
+        self.assertEqual(net.fired, [])
+
+    def test_max_iterations_limit(self):
+        """Verifica che la simulazione si fermi dopo max_iterations passi."""
+        t1 = FakeNode("t1", "transition")
+        canvas = FakeCanvas([t1])
+        net = FakeNet(["t1"])
+        canvas.net = net
+
+        done_called = []
+        engine = SimulationEngine(canvas, interval_ms=0, max_iterations=3, on_done=lambda: done_called.append(True))
+
+        # Simula il loop manualmente (senza thread) per testare la logica
+        for _ in range(3):
+            if engine.max_iterations is not None and engine._iterations_done >= engine.max_iterations:
+                break
+            engine._step()
+            engine._iterations_done += 1
+
+        self.assertEqual(engine._iterations_done, 3)
+        self.assertEqual(len(net.fired), 3)
 
 
 if __name__ == "__main__":

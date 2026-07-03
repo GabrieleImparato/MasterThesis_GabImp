@@ -1,6 +1,8 @@
 import tkinter as tk
 
 from Controller.SimulationEngine import SimulationEngine
+from Controller.AnalysisEngine import AnalysisEngine
+from GUI.Canvas import AnalysisResultDialog
 
 
 class Toolbar(tk.Frame):
@@ -18,7 +20,8 @@ class Toolbar(tk.Frame):
 
         sections = [
             ("Edit", [("Select", "select"), ("Add place", "place"), ("Add transition", "transition"), ("Add arc", "arc")]),
-            ("Run", [("Fire transition", "fire"), ("Auto simulate", "auto"), ("Stop auto", "stop_auto"), ("Delete selected", "delete"), ("Reset", "reset")]),
+            ("Run", [("Fire transition", "fire"), ("Simulate", "auto"), ("Stop", "stop_auto"), ("Delete selected", "delete"), ("Reset", "reset")]),
+            ("Analyze", [("Show matrices", "matrices"), ("P/T Invariants", "invariants"), ("Coverability Tree", "coverability")]),
         ]
 
         for title, buttons in sections:
@@ -47,6 +50,15 @@ class Toolbar(tk.Frame):
         if mode == "reset":
             self.reset_canvas()
             return
+        if mode == "matrices":
+            self.show_matrices()
+            return
+        if mode == "invariants":
+            self.show_invariants()
+            return
+        if mode == "coverability":
+            self.show_coverability_tree()
+            return
         if self.canvas is not None:
             self.canvas.set_mode(mode)
             self.update_mode(mode)
@@ -63,15 +75,40 @@ class Toolbar(tk.Frame):
             self.active_button.config(relief=tk.RAISED)
 
     def start_auto_simulation(self):
-        if self.simulation_engine is None:
-            self.simulation_engine = SimulationEngine(self.canvas, interval_ms=1000)
+        """Apre il dialogo di configurazione e avvia la simulazione."""
+        if self.simulation_engine is not None and self.simulation_engine.is_running:
+            self.canvas.inspector.show_message("Simulazione già in corso")
+            return
+        SimulationConfigDialog(self.winfo_toplevel(), self)
+
+    def _launch_simulation(self, max_iterations, interval_ms):
+        """Avviata dal dialogo di configurazione."""
+        if self.canvas is None:
+            return
+        self.simulation_engine = SimulationEngine(
+            self.canvas,
+            interval_ms=interval_ms,
+            max_iterations=max_iterations,
+            on_done=self._on_simulation_done,
+        )
         self.simulation_engine.start()
-        self.canvas.inspector.show_message("Auto simulation started")
+        mode_str = "∞ iterazioni" if max_iterations is None else f"{max_iterations} iterazioni"
+        self.canvas.inspector.show_message(f"Simulazione avviata — {mode_str}, {interval_ms} ms/step")
+
+    def _on_simulation_done(self):
+        """Callback chiamata dal SimulationEngine al termine."""
+        pass  # Il messaggio di fine è già mostrato dal engine
 
     def stop_auto_simulation(self):
         if self.simulation_engine is not None:
             self.simulation_engine.stop()
-        self.canvas.inspector.show_message("Auto simulation stopped")
+            # Ripristina la marcatura iniziale anche in caso di stop manuale
+            self.simulation_engine._restore_marking()
+            self.simulation_engine = None
+        if self.canvas is not None:
+            self.canvas.update_place_labels()
+            self.canvas.inspector.show_message("Simulazione fermata — rete ripristinata")
+
 
     def fire_transition(self):
         node = self.canvas.selected_node
@@ -104,3 +141,126 @@ class Toolbar(tk.Frame):
         self.canvas.net.transitions.clear()
         self.canvas.net.arcs.clear()
         self.canvas.inspector.show_message("Canvas reset")
+
+    def show_matrices(self):
+        if self.canvas is None:
+            return
+        try:
+            engine = AnalysisEngine(self.canvas.net)
+            content = engine.format_matrices()
+            AnalysisResultDialog(self.winfo_toplevel(), "Pre, Post & Incidence Matrices", content)
+        except Exception as exc:
+            self.canvas.inspector.show_message(f"Analysis error: {str(exc)}")
+
+    def show_invariants(self):
+        if self.canvas is None:
+            return
+        try:
+            engine = AnalysisEngine(self.canvas.net)
+            content = engine.format_invariants()
+            AnalysisResultDialog(self.winfo_toplevel(), "P & T Invariants", content)
+        except Exception as exc:
+            self.canvas.inspector.show_message(f"Analysis error: {str(exc)}")
+
+    def show_coverability_tree(self):
+        if self.canvas is None:
+            return
+        try:
+            engine = AnalysisEngine(self.canvas.net)
+            content = engine.format_coverability_tree()
+            AnalysisResultDialog(self.winfo_toplevel(), "Coverability Tree (Karp-Miller)", content)
+        except Exception as exc:
+            self.canvas.inspector.show_message(f"Analysis error: {str(exc)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dialog di configurazione simulazione
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SimulationConfigDialog(tk.Toplevel):
+    """
+    Dialog modale che chiede all'utente:
+      - Modalità: infinita oppure numero fisso di iterazioni
+      - Intervallo tra gli step (ms)
+    e avvia la simulazione tramite toolbar._launch_simulation().
+    """
+
+    def __init__(self, parent, toolbar):
+        super().__init__(parent)
+        self.toolbar = toolbar
+        self.title("Configura Simulazione")
+        self.transient(parent)
+        self.resizable(False, False)
+        self.grab_set()  # blocca interazione con la finestra principale
+
+        # ── Modalità ──────────────────────────────────────────────────────────
+        mode_frame = tk.LabelFrame(self, text="Modalità", padx=8, pady=6)
+        mode_frame.grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 6), sticky="ew")
+
+        self.mode_var = tk.StringVar(value="infinite")
+
+        tk.Radiobutton(
+            mode_frame, text="Infinita  ∞", variable=self.mode_var,
+            value="infinite", command=self._on_mode_change
+        ).grid(row=0, column=0, sticky="w", pady=2)
+
+        tk.Radiobutton(
+            mode_frame, text="Numero fisso di iterazioni:", variable=self.mode_var,
+            value="fixed", command=self._on_mode_change
+        ).grid(row=1, column=0, sticky="w", pady=2)
+
+        self.iter_var = tk.StringVar(value="10")
+        self.iter_entry = tk.Entry(mode_frame, textvariable=self.iter_var, width=8, state=tk.DISABLED)
+        self.iter_entry.grid(row=1, column=1, sticky="w", padx=4, pady=2)
+
+        # ── Intervallo ────────────────────────────────────────────────────────
+        tk.Label(self, text="Intervallo tra step (ms):").grid(
+            row=1, column=0, sticky="e", padx=(12, 4), pady=6
+        )
+        self.interval_var = tk.StringVar(value="500")
+        tk.Entry(self, textvariable=self.interval_var, width=8).grid(
+            row=1, column=1, sticky="w", padx=(0, 12), pady=6
+        )
+
+        # ── Bottoni ───────────────────────────────────────────────────────────
+        btn_frame = tk.Frame(self)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=(4, 12))
+
+        tk.Button(btn_frame, text="▶  Avvia", width=10, command=self._launch).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Annulla", width=10, command=self.destroy).pack(side=tk.LEFT, padx=6)
+
+        self.bind("<Return>", lambda _: self._launch())
+        self.bind("<Escape>", lambda _: self.destroy())
+
+    def _on_mode_change(self):
+        if self.mode_var.get() == "fixed":
+            self.iter_entry.config(state=tk.NORMAL)
+        else:
+            self.iter_entry.config(state=tk.DISABLED)
+
+    def _launch(self):
+        # Validazione intervallo
+        try:
+            interval_ms = int(self.interval_var.get())
+            if interval_ms < 10:
+                raise ValueError
+        except ValueError:
+            tk.messagebox.showerror("Valore non valido", "L'intervallo deve essere un intero ≥ 10 ms", parent=self)
+            return
+
+        # Validazione iterazioni
+        max_iterations = None
+        if self.mode_var.get() == "fixed":
+            try:
+                max_iterations = int(self.iter_var.get())
+                if max_iterations < 1:
+                    raise ValueError
+            except ValueError:
+                tk.messagebox.showerror(
+                    "Valore non valido", "Il numero di iterazioni deve essere un intero ≥ 1", parent=self
+                )
+                return
+
+        self.destroy()
+        self.toolbar._launch_simulation(max_iterations, interval_ms)
+
