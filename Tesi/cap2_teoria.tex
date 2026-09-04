@@ -1,0 +1,309 @@
+\section{Scheduled Event List}
+
+Once the warehouse operations have been represented as discrete events, it is
+necessary to determine how these events evolve during the simulation. A useful
+technique for this purpose is the \textit{Scheduled Event List} (SEL), which
+provides a mechanism for managing the events that may occur as the state of the
+system changes.
+
+The basic idea is to associate each feasible event with the instant of time at
+which it is expected to occur. Considering a set of events $E$ and a state space
+$X$, at a given state $x \in X$ only a subset of events is feasible. This subset
+can be denoted by $\Gamma(x)$. Each feasible event $i \in \Gamma(x)$ is associated
+with a clock value $y_i$, representing the amount of time remaining before that
+event occurs.
+
+The next event to be executed is therefore the feasible event characterized by
+the smallest clock value:
+
+\begin{equation}
+	e' = \arg\min_{i \in \Gamma(x)} y_i
+\end{equation}
+
+
+\noindent Consequently, the amount of time spent in the current state is
+
+\begin{equation}
+	y^* = \min_{i \in \Gamma(x)} y_i
+\end{equation}
+
+\noindent and the simulation time can be updated according to
+
+\begin{equation}
+	t' = t + y^*
+\end{equation}
+
+\noindent Instead of explicitly maintaining the remaining clock value of every event, the
+simulation can store the events together with their scheduled execution times.
+The resulting Scheduled Event List can be represented as
+
+\[
+L = \{(e_k,t_k)\},
+\]
+
+\noindent where $e_k$ represents an event and $t_k$ the corresponding scheduled execution
+time.
+
+The evolution of the simulation can then be described as an iterative procedure.
+First, the event having the smallest scheduled time is extracted from the SEL
+and executed. The simulation clock is advanced to the corresponding event time
+and the state of the system is updated. As a consequence of this state change,
+some previously scheduled events may no longer be feasible and are therefore
+removed from the list, while newly enabled events are inserted. Finally, the SEL
+is reordered according to the scheduled execution times before starting the next
+iteration.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/Cap2_teoria/SEL_generalized}
+	\caption{Generalized Scheduling Event scheme in computer simulations}
+	\label{fig:selgeneralized}
+\end{figure}
+
+
+In the warehouse scheduling problem, this mechanism is particularly useful
+because the feasibility of a mission depends on the current state and on the
+availability of the resources required to execute it. For example, a loading
+operation requiring both a forklift and an operator cannot start until both
+resources are available. When another mission is completed and those resources
+are released, the state of the system changes and the loading operation may
+become feasible and consequently enter the SEL.
+
+The SEL should therefore not be interpreted as a static schedule generated once
+at the beginning of the simulation. It is a dynamic structure that evolves
+together with the system. This is particularly important when several missions
+compete for shared resources, since every completed operation may modify the set
+of missions that can subsequently be executed.
+
+In this framework, the SEL provides the temporal mechanism required to determine
+\textit{when} events occur. However, an additional model is required to represent
+the state of the system, the availability of resources, the dependencies between
+operations, and the conditions under which an event becomes feasible. Petri nets
+provide a suitable formalism for this purpose.
+
+
+\section{Petri Nets}
+
+Warehouse operations are characterized by a high degree of concurrency. Several
+missions may be active at the same time, different resources may operate
+simultaneously, and multiple activities may compete for the same limited
+resources. A model used to represent such a system must therefore describe not
+only the individual evolution of each mission, but also synchronization,
+concurrency, resource availability, and conflicts among different activities.
+
+\textit{Petri nets} (PNs) are a discrete-event modeling formalism particularly
+suited to representing these characteristics. A Petri net is a directed bipartite
+graph composed of two different types of nodes: \textit{places} and
+\textit{transitions}. Places can represent conditions, states, or the availability
+of resources, whereas transitions represent events or operations that modify the
+state of the system. Places and transitions are connected through directed arcs.
+
+The current state of a Petri net is described by its \textit{marking}, namely the
+distribution of \textit{tokens} among the places of the net. A transition is
+enabled only when its input places contain the tokens required for its execution.
+When an enabled transition fires, the corresponding input tokens are consumed
+and new tokens are produced in its output places, according to the structure of
+the net.
+
+This mechanism naturally represents resource allocation. For example, consider
+a warehouse mission that requires both a forklift and an operator. Two places
+may represent the availability of these resources. The transition corresponding
+to the beginning of the mission can fire only when both places contain the
+required tokens. Once the transition fires, the tokens are removed, representing
+the fact that the forklift and the operator are currently busy. At the completion
+of the mission, another transition can return the tokens to the corresponding
+resource-availability places, making them available for subsequent missions.
+
+This representation becomes particularly useful when several missions compete
+for the same resources. If two missions require the same forklift, for example,
+the availability of a single token prevents both corresponding transitions from
+acquiring that resource simultaneously (fig. \ref{fig:pn}). Resource conflicts can therefore be
+represented directly through the structure and marking of the net.
+
+\begin{figure}[H]
+	\centering
+	
+	\begin{subfigure}[b]{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{imgs/Cap2_teoria/pn1.png}
+		\caption{Before triggering $t1$}
+		\label{fig:pn1}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}[b]{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{imgs/Cap2_teoria/pn2.png}
+		\caption{After triggering $t1$}
+		\label{fig:pn2}
+	\end{subfigure}
+	
+	\caption{Example of petri net for representing the resource lock}
+	\label{fig:pn}
+\end{figure}
+
+\noindent Compared with a representation based exclusively on finite-state machines,
+Petri nets provide a natural way to describe several concurrent activities within
+the same model. This characteristic is especially relevant in warehouse systems,
+where many missions may evolve simultaneously and their execution may depend on
+shared resources.
+
+Petri nets can also be represented mathematically through incidence matrices.
+In particular, the \textit{Pre} and \textit{Post} matrices describe the
+connections from places to transitions and from transitions to places,
+respectively. This representation is particularly useful when the model has to be
+automatically generated, simulated, or integrated into an optimization algorithm.
+
+From a mathematical point of view, a Place/Transition Petri Net can be defined
+as the four-tuple $N = (P,T,Pre,Post)$ where $P$ is the set of places, $T$ is the set of transitions, while $Pre$ and $Post$ describe the connections between places and transitions.
+
+The structure of the net can also be represented through the incidence matrix
+
+\begin{equation}
+	C = Post - Pre
+\end{equation}
+
+\noindent The state of the system is represented by the \textit{marking} $m$, which
+specifies the number of tokens contained in each place. A transition $t$ is
+enabled only if all its input places contain the required number of tokens:
+
+\begin{equation}
+	m(p) \geq Pre(p,t),
+	\qquad \forall p \in {}^\bullet t
+\end{equation}
+
+\noindent When an enabled transition fires, the marking of the Petri Net changes according
+to the tokens consumed and produced by the transition. More generally, the
+evolution of the marking after a sequence of transition firings can be expressed
+through the state equation
+
+\begin{equation}
+	m = m_0 + C\sigma
+\end{equation}
+
+\noindent where $m_0$ is the initial marking and $\sigma$ is the firing-count vector,
+whose elements indicate how many times each transition has fired.
+
+\subsection{Colored Petri Nets}
+
+When the system contains a large number of missions and several similar resources,
+a standard Petri-net representation may become increasingly complex. A useful
+extension is represented by \textit{Colored Petri Nets} (CPNs), which introduce
+different types of tokens, generally referred to as \textit{colors}.
+
+The use of colors makes it possible to distinguish different resources or
+operational conditions while preserving the general structure of the Petri net.
+In a warehouse scenario, for example, different colors can be associated with
+different operators, forklifts, or other resources involved in mission execution.
+In this way, multiple resources can evolve simultaneously through the same model
+without losing information about which specific resource is performing a given
+task.
+
+Formally, a Colored Petri Net can be defined as the six-tuple
+
+\[
+N=(P,T,Pre,Post,Cl,Co),
+\]
+
+\noindent where $P$ is the set of places, $T$ is the set of transitions, $Cl$ is the set
+of colors, and $Co : P \cup T \rightarrow Cl$ is the color function that associates each place and transition with an ordered
+set of admissible colors.
+
+For a place $p_i \in P$, the set of possible token colors can be expressed as
+
+\begin{equation}
+	Co(p_i)=\{a_{i,1},a_{i,2},\dots,a_{i,u_i}\}\subseteq Cl,
+\end{equation}
+
+\noindent while, for a transition $t_j \in T$, the corresponding set of occurrence
+colors is
+
+\begin{equation}
+	Co(t_j)=\{b_{j,1},b_{j,2},\dots,b_{j,v_j}\}\subseteq Cl.
+\end{equation}
+
+\noindent Unlike a standard Petri Net, in which the marking of a place is represented only
+by the total number of tokens, in a CPN the marking must also preserve information
+about their colors. Therefore, the marking of a place $p_i$ can be represented
+by the vector
+
+\[
+m_i =
+\begin{bmatrix}
+	m_i(1)\\
+	m_i(2)\\
+	\vdots\\
+	m_i(u_i)
+\end{bmatrix},
+\]
+
+\noindent where $m_i(h)$ represents the number of tokens of color $a_{i,h}$ contained in
+place $p_i$. The complete marking of the CPN is consequently obtained by
+collecting the markings of all places:
+
+\[
+m =
+\begin{bmatrix}
+	m_1\\
+	m_2\\
+	\vdots\\
+	m_{|P|}
+\end{bmatrix}.
+\]
+
+\noindent This additional information is particularly useful for warehouse optimization.
+For example, if several operators are available, each operator can be associated
+with a different token color. When a transition corresponding to a mission fires,
+the color involved in that transition identifies the particular resource assigned
+to the mission.
+
+As in standard Petri Nets, the structural evolution of the system is described
+through the incidence matrix
+
+\[
+C = Post - Pre.
+\]
+
+\noindent However, in a CPN the entries of the $Pre$ and $Post$ matrices also depend on the colors associated with places and transitions.
+
+Considering a transition $t_j$ with occurrence color $b_{j,k}$, the transition
+is enabled only if the required number of tokens of each color is available in
+its input places:
+
+\begin{equation}
+	m_i(h) \geq Pre(p_i,t_j)(h,k).
+\end{equation}
+
+\noindent If the transition fires, the marking is updated according to
+
+\begin{equation}
+	m_i'(h)
+	=
+	m_i(h)
+	+
+	Post(p_i,t_j)(h,k)
+	-
+	Pre(p_i,t_j)(h,k).
+\end{equation}
+
+\noindent These equations show why the introduction of colors is particularly useful in a
+resource-allocation problem. The enabling of a transition does not depend only
+on the total availability of resources, but also on the availability of the
+specific type or identity of resource required by that operation.
+
+For instance, if a mission requires a particular forklift and an available
+operator, the corresponding transition can be enabled only when the appropriate
+tokens are present in the required places. Once the transition fires, those
+tokens are consumed or moved, representing the fact that the corresponding
+resources are currently allocated to the mission. When the operation is completed,
+the resources can be released and become available again for other missions.
+
+As a consequence, Colored Petri Nets allow the simulation to keep track of the
+usage and identity of individual resources while maintaining the main advantages
+of standard Petri Nets in representing concurrency, synchronization, and resource
+conflicts. This makes them particularly suitable for resource-allocation and
+scheduling problems involving a large number of simultaneous warehouse operations.
+
+\section{Mixed-Integer Linear Programming}
+
+
+\section{Model Predictive Control}
