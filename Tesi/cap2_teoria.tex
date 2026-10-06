@@ -4,7 +4,8 @@ Once the warehouse operations have been represented as discrete events, it is
 necessary to determine how these events evolve during the simulation. A useful
 technique for this purpose is the \textit{Scheduled Event List} (SEL), which
 provides a mechanism for managing the events that may occur as the state of the
-system changes.
+system changes, following the discrete-event simulation framework described
+in~\cite{cassandras2021des}.
 
 The basic idea is to associate each feasible event with the instant of time at
 which it is expected to occur. Considering a set of events $E$ and a state space
@@ -97,6 +98,10 @@ graph composed of two different types of nodes: \textit{places} and
 \textit{transitions}. Places can represent conditions, states, or the availability
 of resources, whereas transitions represent events or operations that modify the
 state of the system. Places and transitions are connected through directed arcs.
+The terminology and firing rules used here follow the formulation
+in~\cite{cassandras2021des}; the use of Petri-net models
+for simulation and control is also discussed
+in~\cite{basile2007pnetlab}.
 
 The current state of a Petri net is described by its \textit{marking}, namely the
 distribution of \textit{tokens} among the places of the net. A transition is
@@ -188,7 +193,9 @@ whose elements indicate how many times each transition has fired.
 When the system contains a large number of missions and several similar resources,
 a standard Petri-net representation may become increasingly complex. A useful
 extension is represented by \textit{Colored Petri Nets} (CPNs), which introduce
-different types of tokens, generally referred to as \textit{colors}.
+different types of tokens, generally referred to as \textit{colors}. The
+PN/CPN modeling framework is discussed
+in~\cite{basile2007pnetlab}.
 
 The use of colors makes it possible to distinguish different resources or
 operational conditions while preserving the general structure of the Petri net.
@@ -313,6 +320,12 @@ resources and the definition of their execution over time. In its classical
 formulation, a scheduling problem specifies the activities to be processed, the
 resources that can execute them, the technological or precedence constraints,
 and one or more performance criteria used to evaluate the resulting schedule.
+For the allocation layer, a relevant reference is the online machine
+load-balancing framework presented in~\cite{aspnes1997online}: jobs are
+assigned irrevocably as they arrive, with the objective of minimizing the
+maximum accumulated machine load. This provides a useful abstraction for
+order assignment; the warehouse model additionally includes resource
+compatibility, mission dependencies, and spatial constraints.
 
 In the warehouse problem considered in this work, the natural scheduling unit is
 not the single mission alone, but the \textit{order}. An order groups several
@@ -390,7 +403,11 @@ A complete combinatorial optimization of all possible order--resource
 associations can become expensive as the number of orders grows. A common
 alternative is a \textit{list-scheduling} heuristic: orders are considered
 sequentially and each order is assigned using the information available at that
-step.
+step. Sequential processing of a known list is not, by itself, an online
+problem: the online interpretation applies when decisions must be made without
+knowledge of future orders. The rule below is a baseline greedy assignment
+heuristic, rather than an implementation of the algorithms proposed
+in~\cite{aspnes1997online}.
 
 Let $L_r$ denote the workload already assigned to resource $r$. In the simplest
 case, when no reliable processing-time estimate is yet available, the workload
@@ -399,11 +416,13 @@ can be approximated by the number of missions already assigned to the resource:
 \begin{equation}
 	L_r
 	=
-	\sum_{o\in\mathcal{O}} n_o x_{or}.
+	\sum_{o\in\mathcal{A}} n_o x_{or}.
 	\label{eq:resource-load-mission-count}
 \end{equation}
 
-\noindent When a new order $o$ has to be assigned, a load-balancing rule selects the
+\noindent Here $\mathcal{A}\subseteq\mathcal{O}$ contains only the orders already
+assigned at the current decision step; initially $\mathcal{A}=\varnothing$.
+When a new order $o$ has to be assigned, a load-balancing rule selects the
 least-loaded compatible resource:
 
 \begin{equation}
@@ -413,7 +432,9 @@ least-loaded compatible resource:
 	\label{eq:least-loaded-assignment}
 \end{equation}
 
-\noindent After the decision, the corresponding load is updated according to
+\noindent Ties must be resolved using a fixed resource ordering to make the
+rule deterministic. After the decision, $o$ is added to $\mathcal{A}$ and the
+corresponding load is updated according to
 
 \begin{equation}
 	L_{r_o^{\star}}
@@ -429,7 +450,13 @@ The rule used in this work is therefore a deterministic load-balancing heuristic
 based on mission count. More refined variants may replace $n_o$ with an
 estimated processing time, but the scheduling principle remains the same: among
 the admissible resources, new work is preferentially assigned to the resource
-with the lowest current load.
+with the lowest current load. Since $n_o$ does not depend on the eligible
+resource, minimizing $L_r$ is equivalent to minimizing $L_r+n_o$. With
+resource-dependent processing estimates, these two choices need not coincide.
+The cited online framework distinguishes identical, related, and unrelated
+machines, and its guarantees depend on both the model and the algorithm
+used~\cite{aspnes1997online}. No competitive-ratio guarantee is claimed here
+for the mission-count heuristic under warehouse execution constraints.
 
 A related quantity, evaluated after the simulation with actual execution times,
 is the effective workload of resource $r$:
@@ -469,20 +496,26 @@ multiple execution intervals.
 For an order $o$, the main temporal quantities used in scheduling theory are:
 
 \begin{itemize}
+	\item $r_o$: release time, at which the order becomes available for processing;
 	\item $S_o$: starting time, corresponding here to the actual start of the
 	first mission of the order;
 	\item $C_o$: completion time, corresponding to the completion of the last
 	mission of the order;
 	\item $p_o$: processing time or effective duration required by the order;
-	\item $d_o$: due date or deadline associated with the order.
+	\item $d_o$: due date associated with the order.
 \end{itemize}
 
-The flow time of the order, measured from its first actual start, is
+The flow time includes waiting before execution and is measured from release:
 
 \begin{equation}
-	F_o=C_o-S_o.
+	F_o=C_o-r_o.
 	\label{eq:order-flow-time}
 \end{equation}
+
+The elapsed time from the first actual start is instead $C_o-S_o$. It includes
+any waiting between missions and therefore need not equal the effective
+processing time $p_o$. These temporal quantities describe execution performance;
+they are distinct from the accumulated-load objective of the cited online model.
 
 In a general scheduling problem, the due date $d_o$ can be given externally. In
 the present model, instead, it is constructed from an estimated duration and is
@@ -548,7 +581,8 @@ absolute deadline is fixed as
 	\label{eq:relative-deadline-scheduling}
 \end{equation}
 
-This is a \textit{relative deadline}: before the order starts, an absolute due
+Here $\widehat{p}_o$ is a start-relative time budget and $d_o$ is the resulting
+absolute target: before the order starts, an absolute due
 date is not yet available; when the first mission actually starts, the deadline
 is converted into an absolute simulation time. The value is then kept fixed for
 the remainder of the order. Recomputing it after every mission would move the
@@ -574,7 +608,8 @@ delay is relevant, the tardiness is used:
 	\label{eq:order-tardiness}
 \end{equation}
 
-The complementary measure is the slack with respect to completion:
+For consistency with the implementation, the term \textit{completion slack}
+denotes the signed margin evaluated after completion:
 
 \begin{equation}
 	\sigma_o=d_o-C_o.
@@ -590,6 +625,14 @@ a deadline violation. Since
 \end{equation}
 
 \noindent the two quantities provide equivalent information with opposite sign.
+This retrospective margin differs from the slack used for dispatching an
+unfinished order. Given an estimate $\widehat{p}^{\mathrm{rem}}_o(t)$ of its
+remaining processing time, the latter can be written as
+\[
+    s_o(t)=d_o-t-\widehat{p}^{\mathrm{rem}}_o(t).
+\]
+The completion margin $\sigma_o$ is retained here as an evaluation indicator,
+not as a dispatching rule.
 
 When the order has not yet completed, $C_o$ is not available. At a current time
 $t$, one may still observe whether the deadline has already been exceeded through
