@@ -1,0 +1,557 @@
+L'obiettivo del presente lavoro è estendere il modello di esecuzione delle
+missioni di movimentazione introducendo l'ordine come unità di assegnazione
+e mantenendo una rappresentazione persistente dell'evoluzione temporale del
+sistema. La configurazione di riferimento comprende $n$ risorse operative (in questo caso otto risorse, rappresentante il numero di operatori assunti dall'azienda);
+il loro numero è fissato per ciascuna simulazione. Nel seguito una risorsa
+rappresenta l'unità operativa costituita dall'operatore e dal relativo mezzo,
+senza modellarne separatamente l'assegnazione.
+
+La soluzione adottata distingue due livelli: l'associazione iniziale degli
+ordini alle risorse e la successiva esecuzione delle missioni mediante una
+rete di Petri colorata temporizzata, indicata come \textit{Colored Timed
+Petri Net} (CTPN). L'associazione è deterministica e rimane invariata durante
+la simulazione; l'esecuzione evolve invece in funzione degli eventi di avvio
+e completamento e della disponibilità dei token della rete.
+
+Le finestre temporali stabiliscono, attualmente, l'osservazione e l'avanzamento del modello.
+Non costituiscono istanti di riassegnazione degli ordini e non impongono
+l'attesa della finestra successiva a una risorsa che può proseguire il proprio
+lavoro. Nella configurazione corrente non vengono costruiti mini-batch con
+un numero minimo, massimo o target di missioni, né vengono confrontate
+configurazioni candidate mediante una previsione su orizzonte mobile.
+
+Le successive modifiche si concentreranno sull'assegnazione dinamica di piccoli batch di missioni per ogni singola risorsa così da ottimizzare l'esecuzione temporale dei singoli ordini o raggruppamenti di missioni in slice temporali, diminuendo o aumentando il numero di missioni per mini-batch e scegliendo anche la migliore risorsa da assegnare per il prossimo step e in conclusione valutare anche $k$ passi avanti di predizione con tecnologie come MPC con \textit{receding horizon}.
+
+\section{Ordini, missioni e risorse}
+\label{sec:progetto-modello}
+
+Siano $\mathcal O=\{o_1,\ldots,o_N\}$ l'insieme degli ordini e
+$\mathcal R=\{1,\ldots,R\}$ quello delle risorse, con $R=8$ nella
+configurazione di riferimento. Ogni ordine $o$ comprende un insieme di
+missioni $\mathcal M_o$, di cardinalità
+\begin{equation}
+    n_o=|\mathcal M_o|.
+\end{equation}
+Una missione identifica un'attività di movimentazione tra un punto di
+prelievo, denominato FROM, e un punto di destinazione, denominato TO.
+Comprende inoltre un identificativo, una priorità e l'associazione con
+l'ordine di appartenenza.
+
+L'identità della singola occorrenza di missione deve essere distinta dal
+codice commerciale: due righe con lo stesso codice non rappresentano
+necessariamente una sola attività. Analogamente, una missione priva di
+identificativo d'ordine viene trattata come un'unità autonoma, evitando di
+accorpare tra loro tutte le attività prive di tale informazione.
+
+Si distingue l'insieme originario $\mathcal M_o$ dal sottoinsieme
+$\mathcal M_o^{\mathrm{amm}}$ delle missioni ammesse alla simulazione dopo
+la preparazione dei dati. Le missioni escluse vengono conservate nella
+valutazione dell'ordine: completare tutte le attività ammesse non equivale
+a completare l'ordine originario se una sua attività è stata esclusa.
+
+\begin{nota}
+	Si specifica che tutte le coordinate, soprattutto quelle fuori mappa che rappresentano spiazzali o altre zone non incluse nella mappa consegnata dall'azienda, per comodità si assume che la mappa finisce entro i limiti previsti e quando viene fatto ciò, si aggiunge un tempo di fittizio al tempo di esecuzione della CPTN così da riportare questa mancanza.
+\end{nota}
+\subsection{Vincolo di assegnazione ordine--risorsa}
+
+Tutte le missioni ammesse di un ordine devono essere eseguite dalla stessa
+risorsa. Indicando con $r(o)$ la risorsa proprietaria dell'ordine, si richiede
+\begin{equation}
+    r(m)=r(o),\qquad \forall m\in\mathcal M_o^{\mathrm{amm}}.
+\end{equation}
+L'associazione viene stabilita prima dell'esecuzione e non cambia nelle
+finestre successive. Un ordine costituisce pertanto un'unità indivisibile
+ai fini dell'assegnazione, anche se comprende numerose missioni.
+
+Occorre distinguere tale proprietà dalla disponibilità operativa della
+risorsa. Una risorsa può essere proprietaria di più ordini ancora da iniziare,
+ma ne esegue uno alla volta. Quando avvia un ordine, ne mantiene la riserva
+fino al termine della sequenza delle missioni ammesse, senza intercalare
+attività appartenenti ad altri ordini.
+
+\subsection{Priorità e precedenze interne}
+
+A ogni missione $m$ è associata una priorità numerica $p_m$; un valore
+maggiore determina una precedenza più elevata all'interno dello stesso
+ordine. La sequenza ammessa è quindi
+\begin{equation}
+    \pi_o=(m_{o,1},\ldots,m_{o,n_o^{\mathrm{amm}}}),
+    \qquad p_{m_{o,i}}\geq p_{m_{o,i+1}},
+\end{equation}
+dove $n_o^{\mathrm{amm}}=|\mathcal M_o^{\mathrm{amm}}|$. A parità di
+priorità si conserva l'ordine relativo delle attività in ingresso.
+
+La priorità non viene utilizzata per costruire una graduatoria globale
+tra ordini. Gli ordini mantengono l'ordine della loro prima comparsa nei dati;
+per ciascuna risorsa tale ordinamento determina la successione degli ordini
+a essa assegnati. Una priorità mancante viene sostituita con un valore
+convenzionale unitario.
+
+\section{Politica di assegnazione iniziale}
+\label{sec:progetto-assegnazione}
+
+\subsection{Compatibilità dell'intero ordine}
+
+Sia $\mathcal R_m\subseteq\mathcal R$ l'insieme delle risorse compatibili
+con la missione $m$. La risorsa scelta deve essere compatibile con tutte le
+missioni ammesse dell'ordine; di conseguenza,
+\begin{equation}
+    \mathcal R_o=
+    \bigcap_{m\in\mathcal M_o^{\mathrm{amm}}}\mathcal R_m.
+\end{equation}
+Un ordine con attività ammesse può essere assegnato soltanto se
+$\mathcal R_o\neq\varnothing$. In caso contrario il problema, con i vincoli
+forniti, non ammette un'assegnazione per quell'ordine e la procedura segnala
+l'incompatibilità. Non è prevista una riassegnazione parziale che distribuisca
+le missioni tra operatori diversi.
+
+La compatibilità rappresenta l'idoneità della risorsa rispetto ai vincoli
+della missione. Essa non certifica l'esistenza di un percorso sulla mappa,
+che viene verificata separatamente. Nella configurazione corrente tutte le
+risorse condividono gli stessi limiti geometrici di operatività.
+
+\begin{nota}
+	L'attuale modellazione di compatibilità vale finché si assegna gli ordini con all'inizio dell'esecuzione, la prossima modifica permetterà di poter assegnare gli ordini ad ogni finestra di aggiornamento secondo la risorsa migliore.
+\end{nota}
+
+\subsection{Bilanciamento mediante numero di missioni}
+
+Il criterio di assegnazione utilizza come carico stimato il numero di
+missioni già attribuite alla risorsa. Sia $L_r^{(j)}$ il carico della risorsa
+$r$ dopo l'assegnazione dei primi $j$ ordini, con $L_r^{(0)}=0$.
+Per l'ordine successivo $o_j$ viene scelta
+\begin{equation}
+    r(o_j)\in\mathop{\arg\min}_{r\in\mathcal R_{o_j}}L_r^{(j-1)}.
+\end{equation}
+A parità di carico viene selezionata la risorsa con indice minore. Il carico
+è quindi aggiornato secondo
+\begin{equation}
+    L_r^{(j)}=
+    \begin{cases}
+        L_r^{(j-1)}+n_{o_j}^{\mathrm{amm}},&r=r(o_j),\\
+        L_r^{(j-1)},&r\neq r(o_j).
+    \end{cases}
+\end{equation}
+
+Si tratta di un'euristica di bilanciamento iniziale, non della soluzione di
+un problema di ottimizzazione globale del makespan o dei ritardi. Le durate
+effettive dei percorsi e le posizioni future delle risorse non intervengono
+in questa decisione. Ne consegue che carichi simili per numero di missioni
+possono produrre tempi di lavoro differenti.
+
+Tutti gli ordini con missioni ammesse vengono assegnati prima dell'avanzamento
+temporale. Non esiste quindi, nella politica corrente, un insieme di missioni
+operative in attesa di ricevere un proprietario alle finestre successive.
+
+\section{Modello spaziale e ammissibilità dei percorsi}
+\label{sec:progetto-spazio}
+
+\subsection{Mappa e normalizzazione delle posizioni}
+
+L'ambiente è rappresentato da una griglia di occupazione con celle libere e
+celle ostacolo. Per il dominio rettangolare delle coordinate operative
+\begin{equation}
+    \Omega=[1,N_X]\times[1,N_Y],
+\end{equation}
+un punto finito $q=(X,Y)$ esterno al dominio viene riportato al punto più
+vicino entro i limiti mediante la proiezione
+\begin{equation}
+    \Pi_\Omega(q)=
+    \left(\min\{N_X,\max\{1,X\}\},
+          \min\{N_Y,\max\{1,Y\}\}\right).
+\end{equation}
+Questa scelta consente di trattare coordinate esterne senza eliminare
+immediatamente la missione. La proiezione garantisce soltanto l'appartenenza
+al dominio: il punto ottenuto può ancora essere occupato o scollegato dalla
+zona percorribile. Una coordinata non finita non identifica invece un punto
+proiettabile e comporta l'esclusione preliminare della missione.
+
+Le coordinate operative vengono trasformate in indici della griglia attraverso
+una convenzione coerente con il verso degli assi e con i bordi del dominio.
+Nella convenzione adottata X identifica la direzione delle righe e Y quella
+delle colonne con verso invertito. L'appartenenza al dominio deve essere
+preservata anche dalla trasformazione: un punto sul bordo non deve produrre
+un indice esterno alla matrice.
+
+\subsection{Celle libere e componenti raggiungibili}
+
+Si consideri il grafo $G=(V,E)$ associato alla griglia, dove $V$ comprende le
+celle libere ed $E$ collega le celle adiacenti secondo la modalità di movimento
+ammessa. Il vicinato può comprendere quattro oppure otto direzioni e deve
+essere lo stesso nella ricerca delle celle raggiungibili e nella pianificazione.
+
+Per una cella libera $s$, si indica con $\mathcal C(s)$ la componente connessa
+che la contiene. Quando si deve sostituire un punto richiesto $q$ con una
+cella raggiungibile da $s$, si adotta la regola
+\begin{equation}
+    q^*=\mathop{\arg\min}_{v\in\mathcal C(s)}\|v-q\|_2^2.
+    \label{eq:progetto-cella-raggiungibile}
+\end{equation}
+A parità di distanza si applica un criterio deterministico per riga e
+successivamente per colonna. La distanza è misurata dal punto richiesto;
+non coincide con la lunghezza del percorso dalla risorsa.
+
+La distinzione tra cella libera e cella raggiungibile è essenziale. Una
+destinazione può essere libera ma appartenere a una regione isolata. Per
+questo motivo il TO viene sempre valutato rispetto alla componente del FROM
+effettivo: se vi appartiene rimane invariato, altrimenti viene ridefinito
+secondo l'Equazione~\ref{eq:progetto-cella-raggiungibile}.
+
+La ridefinizione è una regola geometrica del modello. Essa non garantisce
+che la cella sostitutiva rappresenti la medesima postazione logistica reale;
+la coerenza delle posizioni con il magazzino fisico rimane un requisito di
+validazione dei dati.
+
+\subsection{Continuità della risorsa e pianificazione delle tratte}
+
+Per ogni missione si pianificano due tratte: dalla posizione corrente della
+risorsa al FROM e dal FROM al TO. La seconda tratta parte dal punto
+effettivamente raggiunto con la prima, così da mantenere la continuità del
+movimento. Dopo il completamento, il TO effettivo diventa la posizione
+iniziale della risorsa per la missione successiva.
+
+Una risorsa che non ha ancora lavorato viene inizialmente collocata presso
+il FROM della sua prima missione; non viene modellato un trasferimento da un
+deposito comune. Se tale posizione è occupata, si individua la cella libera
+più vicina. Un FROM occupato viene corretto nella componente raggiungibile
+dalla posizione della risorsa. Un FROM già libero ma isolato non viene invece
+spostato automaticamente e può determinare un fallimento della tratta di
+avvicinamento.
+
+I percorsi vengono ricercati mediante A* sulla mappa statica. Non viene
+modellata l'occupazione spazio-temporale dovuta agli altri mezzi; la
+concorrenza temporale tra risorse non implica pertanto una verifica delle
+collisioni tra i loro percorsi.
+
+\subsection{Durata della missione}
+
+La durata $\tau_m$ viene determinata al momento dell'avvio a partire dal
+percorso pianificato. Comprende l'avvicinamento della risorsa, la tratta di
+movimentazione e un contributo convenzionale per le operazioni accessorie.
+La legge di stima adottata dipende dalla discretizzazione del percorso e
+da coefficienti empirici, descritti nel capitolo implementativo.
+
+È necessario distinguere $\tau_m$ dal tempo nominale usato per definire le
+deadline. La durata simulata non viene limitata al valore nominale e non
+comprende l'attesa precedente all'avvio. Si tratta di una stima del modello,
+non di una misura acquisita da un sistema fisico.
+
+\section{Modello CTPN e riserva della risorsa}
+\label{sec:progetto-ctpn}
+
+\subsection{Dalla singola missione alla sequenza d'ordine}
+
+La Figura~\ref{fig:pn2vecchiamissioni} richiama lo schema precedente,
+organizzato intorno alle alternative di risorsa per una singola missione.
+Nella soluzione adottata l'associazione viene invece determinata a livello
+di ordine prima dell'esecuzione. La rete non seleziona un nuovo proprietario
+per ogni missione, ma utilizza il colore della risorsa già assegnata.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN2_VECCHIA_MISSIONI}
+    \caption{Schema di riferimento della modellazione precedente delle alternative di risorsa per una singola missione.}
+    \label{fig:pn2vecchiamissioni}
+\end{figure}
+
+Ciascuna missione mantiene una sottorete con tre transizioni e due posti
+interni. Le tre fasi rappresentano l'avvio, il completamento temporizzato
+e il passaggio alla missione seguente oppure il rilascio della risorsa.
+Le sottoreti dello stesso ordine vengono collegate in sequenza secondo
+le priorità interne.
+
+\subsection{Precedenze e token colorati}
+
+Tra due missioni consecutive viene inserito un posto di collegamento che
+riceve il token dalla transizione finale della precedente e lo rende
+disponibile alla transizione iniziale della successiva. Il token conserva
+il colore della risorsa assegnata. Il posto di collegamento rappresenta
+quindi sia la precedenza sia il mantenimento della riserva operativa.
+
+La Figura~\ref{fig:pn1nuovamissioni} mostra una sequenza di tre missioni;
+i posti $P7$ e $P8$ collegano le rispettive sottoreti. Lo schema evidenzia
+le precedenze e va letto insieme al vincolo sul colore della risorsa.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN1_NUOVA_MISSIONI}
+    \caption{Collegamento tra tre missioni dello stesso ordine mediante posti di precedenza. Il token della risorsa viene trasferito lungo la sequenza senza essere restituito al posto comune tra missioni intermedie.}
+    \label{fig:pn1nuovamissioni}
+\end{figure}
+
+Solo la prima missione dell'ordine preleva il token dal posto comune delle
+risorse disponibili; solo l'ultima missione ammessa lo restituisce.
+All'interno dell'ordine, la disponibilità necessaria all'avvio è rappresentata
+dal token nel posto di collegamento: non occorre prelevare nuovamente una
+risorsa libera dal posto comune.
+
+Indicando con $\mu_r(p)$ il numero di token del colore $r$ nel posto $p$,
+il modello preserva l'invariante
+\begin{equation}
+    \sum_{p\in\mathcal P}\mu_r(p)=1,
+    \qquad\forall r\in\mathcal R,
+\end{equation}
+dove $\mathcal P$ è l'insieme dei posti della rete operativa.
+La marcatura determina quali transizioni possono scattare, mentre
+l'associazione ordine--risorsa limita il colore con cui possono essere
+eseguite.
+
+\subsection{Esclusione, fallimento e prosecuzione dell'ordine}
+
+Una missione esclusa nella preparazione non genera una sottorete operativa.
+Se invece una missione ammessa non dispone di un percorso valido, viene
+registrata come fallita e il token viene trasferito oltre il relativo ramo,
+consentendo di esaminare la missione successiva dello stesso ordine.
+In questo caso non si aggiorna la posizione della risorsa e non si attribuisce
+il tempo di un'esecuzione che non è avvenuta.
+
+La riserva permane fino al termine della sequenza ammessa, anche quando
+alcune missioni falliscono. Il rilascio finale della risorsa non implica
+che l'ordine sia completato con successo: un ordine con missioni escluse
+o fallite rimane incompleto. Questa distinzione evita di confondere
+l'esaurimento del lavoro eseguibile con il soddisfacimento dell'ordine.
+
+\section{Stato persistente ed evoluzione per eventi}
+\label{sec:progetto-tempo}
+
+\subsection{Informazioni di stato}
+
+La simulazione mantiene un unico stato che comprende l'associazione degli
+ordini, gli stati delle missioni, la marcatura, le posizioni delle risorse,
+i tempi di avvio e completamento e la storia degli eventi. Una missione
+operativa può essere in attesa, in esecuzione, completata oppure fallita;
+le missioni escluse sono conservate separatamente ai fini del rendiconto.
+
+Per una missione avviata al tempo $s_m$ con durata $\tau_m$, il completamento
+programmato è
+\begin{equation}
+    c_m=s_m+\tau_m.
+\end{equation}
+Durante l'esecuzione, al tempo $t$, il residuo è
+\begin{equation}
+    \rho_m(t)=\max\{0,c_m-t\}.
+\end{equation}
+Il raggiungimento di $c_m$ genera l'evento di completamento e abilita
+l'aggiornamento della rete e della posizione finale della risorsa.
+
+\subsection{Finestre di osservazione}
+
+Gli istanti di osservazione sono separati da un intervallo $\Delta T$;
+nella configurazione corrente
+\begin{equation}
+    \Delta T=900\,\mathrm{s}=15\,\mathrm{min}.
+\end{equation}
+Tale parametro è indipendente dal numero di missioni degli ordini e dal
+budget nominale usato per le deadline. All'interno di una finestra il modello
+avanza da un evento al successivo, senza discretizzare le durate delle
+missioni in multipli di $\Delta T$.
+
+Una risorsa che completa un'attività prima del termine della finestra può
+avviare immediatamente la successiva attività abilitata. Non è introdotta
+un'inattività obbligatoria fino all'osservazione successiva. Se il lavoro
+attraversa un confine di finestra, il tempo residuo e la marcatura vengono
+conservati senza interruzione né nuova assegnazione. Non è prevista
+preemption.
+
+La variazione di $\Delta T$ modifica la frequenza delle osservazioni,
+non la politica di distribuzione degli ordini. A parità di dati e regole,
+le finestre non devono introdurre attese artificiali o modificare gli istanti
+di esecuzione per effetto del solo campionamento.
+
+\subsection{Termine della simulazione e condizioni di arresto}
+
+L'esecuzione prosegue finché rimangono missioni operative in attesa o in
+corso. L'obiettivo di durata del turno, pari a otto ore nella configurazione
+di riferimento, serve a valutare il risultato e non tronca le attività.
+
+Se non esistono missioni in esecuzione ma restano missioni assegnate che
+non possono essere abilitate, viene segnalata una condizione di blocco
+della dinamica. Non è previsto il recupero mediante riassegnazione online.
+Tale condizione va distinta dal fallimento di un singolo percorso, che viene
+registrato e superato secondo la regola di prosecuzione descritta in precedenza.
+
+\section{Budget temporale e deadline degli ordini}
+\label{sec:progetto-deadline}
+
+Per ogni ordine si definisce un budget temporale nominale
+\begin{equation}
+    D_o=n_o\,\overline{\tau},
+    \label{eq:order_duration_limit}
+\end{equation}
+con $\overline{\tau}=180\,\mathrm{s}$ nella configurazione corrente.
+Il budget può essere sostituito da un valore specifico per il singolo ordine.
+Il conteggio $n_o$ considera l'ordine originario, comprese le attività
+successivamente escluse; per tale motivo budget e completezza devono essere
+interpretati separatamente.
+
+Indicando con $S_o$ l'avvio effettivo della prima missione eseguibile,
+la deadline assoluta è
+\begin{equation}
+    d_o=S_o+D_o.
+\end{equation}
+L'assegnazione iniziale non determina ancora $S_o$: un ordine può essere
+associato a una risorsa e attendere che essa termini gli ordini precedenti.
+Il budget decorre dal primo avvio, non dall'istante iniziale della simulazione,
+e la deadline non viene ricostruita nelle finestre successive.
+
+Per un ordine interamente completato, con istante finale $C_o$, il rispetto
+dell'obiettivo richiede $C_o\leq d_o$. Si definisce il ritardo positivo
+\begin{equation}
+    T_o=\max\{0,C_o-d_o\}.
+\end{equation}
+Se l'ordine è ancora aperto e ha una deadline definita, si può osservare
+il ritardo corrente $\max\{0,t-d_o\}$, senza interpretarlo come ritardo
+finale di un ordine completato.
+
+La deadline è un obiettivo di servizio valutato a posteriori, non una
+condizione che impedisce l'avvio o impone l'interruzione delle attività.
+Analogamente, una missione con $\tau_m>\overline{\tau}$ viene segnalata
+come superiore al riferimento nominale ma può proseguire fino al termine.
+Un ordine incompleto non viene classificato come regolarmente concluso
+entro la deadline solo perché il tempo delle attività eseguite è contenuto.
+
+\section{Osservabilità e indicatori di valutazione}
+\label{sec:progetto-indicatori}
+
+Il modello deve consentire di ricostruire quali attività sono state svolte,
+da quale risorsa e in quale intervallo, distinguendo successo, esclusione
+e fallimento. La cronologia degli eventi e delle finestre descrive
+l'esecuzione; non rappresenta una successione di nuove decisioni di
+assegnazione, che nella politica adottata vengono prese una sola volta.
+
+\subsection{Completamento e distribuzione dei tempi}
+
+Gli indicatori principali comprendono il numero di missioni completate,
+fallite ed escluse, il numero di ordini completi e incompleti, gli ordini
+completi entro la deadline e quelli in ritardo, oltre al tempo finale del
+modello. La valutazione del turno considera sia il completamento di tutti
+gli ordini sia il rispetto dell'orizzonte temporale obiettivo.
+
+Per le sole missioni completate con durata valida, indicate con
+$\mathcal M_c$, si analizzano minimo, massimo, media e mediana. Con
+$n_c=|\mathcal M_c|>0$, la media è
+\begin{equation}
+    \overline{\tau}_{\mathrm{oss}}=
+    \frac{1}{n_c}\sum_{m\in\mathcal M_c}\tau_m.
+\end{equation}
+La mediana descrive il valore centrale della distribuzione ed è meno
+sensibile della media a durate particolarmente elevate. L'analisi per fasce
+conta le missioni in intervalli $[a,a+h)$, evitando duplicazioni ai confini;
+un esempio è la suddivisione in fasce di 30 secondi.
+
+Queste statistiche possono supportare la regolazione del budget nominale,
+ma non lo aggiornano automaticamente. Il massimo osservato non è una
+garanzia sui tempi di scenari futuri e le statistiche delle sole missioni
+completate devono essere accompagnate dal conteggio delle missioni escluse
+dall'analisi.
+
+\subsection{Carico delle risorse e significato dei tempi}
+
+Il lavoro simulato completato dalla risorsa $r$ è
+\begin{equation}
+    W_r=\sum_{\substack{m\in\mathcal M_c\\r(m)=r}}\tau_m.
+\end{equation}
+Il confronto tra i $W_r$ consente di valutare a posteriori l'effetto del
+bilanciamento iniziale per numero di missioni. Non costituisce il criterio
+utilizzato per riassegnare il lavoro durante la simulazione.
+
+Dal lavoro completato e dal tempo finale $T_{\mathrm{sim}}>0$ è inoltre
+possibile derivare l'indicatore
+\begin{equation}
+    U_r=\frac{W_r}{T_{\mathrm{sim}}}\,100,
+\end{equation}
+che esprime l'utilizzazione rispetto all'orizzonte simulato. Questo indicatore
+è una quantità derivabile dai risultati, non una misura del carico del
+processore né un indice automaticamente usato dalla politica decisionale.
+
+Il tempo simulato rappresenta l'evoluzione del sistema modellato; il tempo
+di calcolo rappresenta invece il costo computazionale dell'esperimento.
+Una modifica che accelera il calcolo senza cambiare percorsi e durate non
+rende più veloci le attività fisiche simulate.
+
+\subsection{Diagnostica geometrica}
+
+Per interpretare i fallimenti è necessario distinguere il FROM e il TO
+richiesti da quelli effettivamente usati dopo le correzioni, e conoscere la
+posizione della risorsa prima dell'avvio. La rappresentazione di questi
+punti sulla mappa permette di riconoscere ostacoli, regioni isolate e
+spostamenti introdotti dalle regole geometriche.
+
+Un segmento grafico tra due punti non dimostra l'esistenza di un percorso.
+L'ammissibilità rimane affidata alla pianificazione sul grafo. La diagnostica
+supporta quindi la verifica del modello senza alterare la politica di
+assegnazione o introdurre nuove regole di esecuzione.
+
+\section{Efficienza computazionale e separazione delle responsabilità}
+\label{sec:progetto-efficienza}
+
+La ricerca della cella raggiungibile e la pianificazione del percorso sono
+operazioni distinte. La prima identifica un estremo ammissibile; la seconda
+costruisce una sequenza di celle che lo raggiunge. Poiché la mappa è statica,
+le componenti connesse possono essere individuate una volta e riutilizzate
+per richieste successive.
+
+Il progetto prevede pertanto la conservazione delle componenti già esplorate,
+ricostruendole quando cambiano gli ostacoli o la modalità di movimento.
+Un punto già appartenente alla componente corretta non richiede una nuova
+esplorazione. Questa scelta riduce il lavoro ripetuto senza modificare il
+criterio geometrico, la regola di parità o le precedenze delle missioni.
+Non introduce una memorizzazione dei percorsi A* e non costituisce una
+nuova politica di schedulazione.
+
+L'organizzazione complessiva mantiene così separate l'assegnazione degli
+ordini, la dinamica della CTPN, la geometria dei percorsi e la valutazione
+dei risultati. Ogni livello utilizza informazioni coerenti con gli altri,
+senza attribuire a una correzione spaziale il significato di una decisione
+sulla risorsa o a una finestra di osservazione quello di una ripianificazione.
+
+\section{Schema complessivo della soluzione}
+
+La procedura progettata si articola nelle seguenti fasi:
+\begin{enumerate}
+    \item preparare le missioni, mantenendone l'identità e correggendo le
+          coordinate finite esterne al dominio;
+    \item separare le missioni non ammissibili e ordinare quelle ammesse
+          per ordine e priorità interna;
+    \item assegnare ogni ordine a una risorsa compatibile, bilanciando
+          il numero di missioni attribuite;
+    \item costruire la CTPN con i collegamenti di precedenza e inizializzare
+          lo stato persistente;
+    \item per ogni missione abilitata, determinare gli estremi effettivi,
+          ricercare il percorso e definirne la durata;
+    \item avanzare per eventi, aggiornando marcatura, posizione delle risorse,
+          stato degli ordini e ritardi, e conservando la continuità tra finestre;
+    \item terminare quando non rimane lavoro operativo in attesa o in corso,
+          distinguendo gli ordini completati da quelli incompleti;
+    \item analizzare tempi, carichi, deadline e cause dei fallimenti.
+\end{enumerate}
+
+La struttura non richiede la generazione di configurazioni alternative,
+il riempimento di batch verso una cardinalità target o l'ottimizzazione
+periodica delle assegnazioni. Tali meccanismi non fanno parte della soluzione
+attualmente realizzata.
+
+\section{Limiti progettuali e sviluppi futuri}
+
+Il principale limite dell'assegnazione iniziale è l'uso del numero di missioni
+come approssimazione del carico: ordini di pari cardinalità possono richiedere
+trasferimenti molto diversi. Inoltre, la politica non usa le deadline né
+la posizione della risorsa per scegliere l'ordine successivo. La valutazione
+dei ritardi permette di misurare questi effetti, ma non li corregge
+attraverso una funzione di costo.
+
+La proiezione delle coordinate e la ridefinizione del TO mantengono la
+fattibilità geometrica sotto le ipotesi indicate, ma richiedono una verifica
+della corrispondenza con le postazioni reali. Restano inoltre da considerare
+la calibrazione della durata, gli ostacoli dinamici e le interferenze tra
+mezzi. Una missione fallita non viene ripianificata automaticamente dopo
+un cambiamento del contesto.
+
+Possibili estensioni comprendono un'assegnazione basata su durate stimate,
+la considerazione delle distanze di avvicinamento, una calibrazione dei
+budget su dati osservati e un controllo esplicito delle collisioni.
+Una futura politica online potrebbe introdurre nuovi ordini durante
+l'esecuzione e assegnarli al rilascio delle risorse, oppure confrontare
+alternative su un orizzonte di previsione. Si tratterebbe di un'estensione
+del livello decisionale: l'evoluzione temporale delle missioni è già basata
+su eventi, mentre la loro assegnazione rimane iniziale e fissa.

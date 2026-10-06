@@ -1,0 +1,610 @@
+L'obiettivo del presente lavoro è estendere l'approccio di schedulazione sviluppato in precedenza, affiancando alla pianificazione dell'intera giornata lavorativa una ripianificazione su finestre temporali di durata ridotta, ad esempio pari a 30 minuti. In questo contesto, il numero di operatori e carrelli elevatori è fissato a \textbf{otto}; l'ottimizzazione riguarda quindi la selezione delle missioni ancora da svolgere, la loro distribuzione tra le risorse disponibili e il relativo ordine di esecuzione. Lo scopo è utilizzare efficacemente il tempo disponibile, riducendo spostamenti e attese e favorendo il completamento del lavoro.
+
+Al termine della finestra $k$, il sistema acquisisce lo stato aggiornato del magazzino e costruisce $n$ mini-batch candidati per la finestra $k+1$. Ogni candidato contiene un sottoinsieme delle missioni residue, accompagnato da una proposta di assegnazione e sequenziamento. I sottoinsiemi possono condividere alcune missioni e combinare attività appartenenti a ordini diversi, purché ne rispettino i vincoli. Le alternative vengono simulate a partire dallo stesso stato iniziale e confrontate rispetto alle prestazioni previste e al limite temporale della finestra. Soltanto il programma selezionato viene applicato all'esecuzione.
+
+È utile distinguere la \textit{finestra temporale}, che stabilisce l'intervallo entro cui il sistema opera prima del successivo aggiornamento, dal \textit{mini-batch}, che identifica l'insieme delle missioni candidate a essere eseguite in tale intervallo. Una finestra di durata fissata non corrisponde necessariamente a un numero costante di missioni. Inoltre, la sua conclusione non implica automaticamente che tutte le attività avviate siano terminate: gli eventuali lavori ancora in corso devono essere conservati nello stato e considerati come impegni già assunti nella successiva pianificazione.
+
+La procedura di scheduling utilizza le \textit{Colored Timed Petri Nets} (CTPN), ossia reti di Petri colorate temporizzate, per valutare i programmi candidati. Lo scheduler genera e confronta le proposte di assegnazione e sequenziamento, mentre la CTPN ne simula l'evoluzione temporale e verifica l'abilitazione delle attività in base alla disponibilità delle risorse e ai vincoli rappresentati nel modello. Nel seguito, i termini \textit{operatore} e \textit{risorsa} sono usati in maniera intercambiabile, assumendo che ogni risorsa rappresenti un operatore con il relativo carrello elevatore.
+
+\section{Ordini e missioni}
+
+Ogni ordine è costituito da una o più missioni, ciascuna associata al relativo identificativo d'ordine. Il primo vincolo richiede che tutte le missioni appartenenti allo stesso ordine siano eseguite da un unico operatore, dalla prima all'ultima attività. L'associazione tra ordine e risorsa deve quindi essere mantenuta anche quando l'esecuzione si estende su più finestre temporali. Tale vincolo non impedisce a un operatore di gestire più ordini, ma esclude che un ordine già iniziato venga suddiviso tra operatori diversi.
+
+Le singole missioni presentano il parametro \texttt{NM\_PRIORITY}, che ne specifica la priorità: a un valore numerico maggiore corrisponde una precedenza più elevata. Nella formulazione adottata, le missioni di ciascun ordine vengono pertanto eseguite in ordine di priorità decrescente. Il confronto riguarda esclusivamente missioni appartenenti allo stesso ordine; non introduce una graduatoria tra ordini differenti, ai quali non è associata una priorità esplicita nei dati.
+
+Per limitare il tempo che intercorre tra l'avvio di un ordine e il suo completamento, si introduce un limite di durata definito in fase di configurazione, poiché tale informazione non è presente nelle basi dati fornite. Una possibile stima iniziale consiste nel moltiplicare il numero di missioni dell'ordine per una durata di riferimento della singola missione:
+\begin{equation}
+    D_o=m_o\,\overline{\tau},
+    \label{eq:deadline}
+\end{equation}
+dove $m_o$ è il numero di missioni dell'ordine $o$ e $\overline{\tau}$ è un tempo di esecuzione rappresentativo, espresso nella stessa unità di misura di $D_o$. Questa relazione costituisce un criterio iniziale da verificare sui dati: una durata media non garantisce, da sola, che il limite sia compatibile con percorsi, attese e caratteristiche delle missioni. Il valore ottenuto deve quindi poter essere verificato ed eventualmente modificato manualmente.
+
+Il limite $D_o$ rappresenta una durata massima, mentre la \textit{deadline} è l'istante entro cui l'ordine deve terminare. Indicando con $S_o$ l'avvio effettivo della prima missione e con $C_o$ il completamento dell'ultima, si definiscono
+\begin{equation}
+    d_o=S_o+D_o,
+    \qquad C_o\leq d_o.
+\end{equation}
+Il tempo trascorso comprende anche le attese tra le missioni dell'ordine, ma non l'attesa precedente al suo primo avvio. Il rispetto di questo limite deve pertanto essere affiancato agli obiettivi di completamento del lavoro, per evitare che ordini non ancora iniziati vengano rinviati ripetutamente.
+
+Un ordine può attraversare più finestre temporali. In tal caso, a ogni aggiornamento si conservano l'operatore assegnato, le missioni già completate, quelle ancora da svolgere e la deadline originaria. Quest'ultima non viene ricalcolata a partire dall'inizio della nuova finestra: il tempo disponibile continua a decorrere dal primo avvio dell'ordine.
+
+Per favorire la chiusura degli ordini già iniziati, lo scheduler può introdurre un criterio di preferenza basato sul tempo rimanente alla scadenza e sul lavoro necessario per completarli. Tale criterio riguarda la scelta dei mini-batch e rappresenta un'urgenza calcolata dallo scheduler; non modifica il parametro \texttt{NM\_PRIORITY} delle missioni e non attribuisce agli ordini una priorità originariamente presente nei dati. La preferenza per un ordine aperto deve essere valutata insieme ai tempi complessivi e alla disponibilità delle risorse, senza impedire agli operatori liberi di avviare altri ordini. L'operatore già assegnato a un ordine rimane invece riservato a esso fino al suo completamento.
+
+
+% DA VEDERE
+
+\subsection{New mini-batch subdivision}
+
+Sia $\mathcal{O}$ l'insieme degli ordini da gestire e sia
+$\mathcal{M}$ l'insieme delle missioni che li compongono.
+All'istante di osservazione $t_k$, le missioni sono suddivise
+in tre insiemi:
+\begin{equation}
+	\mathcal{M}
+	= \mathcal{C}_k \,\dot\cup\,
+	\mathcal{I}_k \,\dot\cup\,
+	\mathcal{R}_k,
+\end{equation}
+dove $\mathcal{C}_k$ contiene le missioni completate,
+$\mathcal{I}_k$ quelle in corso e $\mathcal{R}_k$ quelle
+ancora da iniziare. Il simbolo $\dot\cup$ indica che gli
+insiemi sono disgiunti: ogni missione appartiene a un solo
+stato di esecuzione.
+
+Le missioni in corso costituiscono impegni già assunti:
+durante la ripianificazione devono proseguire con la
+risorsa assegnata, senza essere riassegnate o avviate
+nuovamente. La selezione dei nuovi mini-batch riguarda
+quindi le missioni ancora da iniziare.
+
+% NON TOCCARE QEUSTA PARTE
+(altro da scrivere bla bla formalità bla bla)
+
+Chiamiamo $\mathcal{A}_k$ l'insieme delle missioni disponibili per la simualazione dei mini-batch dove $\mathcal{A}_k \subseteq \mathcal{R}_k$.
+
+Prima di poter eseguire una divisione in singoli mini-batch sarebbe doveroso raggruppare tutte le missioni appartenenti ad un determinato ordine e poi ordinarle secondo la priorità.
+
+% QUI PUOI PROSEGUIRE
+
+Il raggruppamento per ordine permette di individuare le
+precedenze tra le missioni e di conservare l'associazione
+con l'operatore assegnato. Non impone che tutte le missioni
+di un ordine siano inserite nello stesso mini-batch:
+l'ordine può essere completato attraverso più finestre,
+purché siano rispettate le precedenze interne e sia
+mantenuto lo stesso operatore.
+
+A partire da $\mathcal{A}_k$, si costruiscono $n$
+mini-batch candidati per la finestra successiva:
+\begin{equation}
+	B_{k+1}^{(i)} \subseteq \mathcal{A}_k,
+	\qquad i=1,\ldots,n.
+\end{equation}
+I candidati sono alternative tra cui scegliere, quindi
+possono condividere alcune missioni. Ogni candidato può
+inoltre combinare missioni appartenenti a ordini diversi,
+nel rispetto dei vincoli introdotti.
+
+A ciascun sottoinsieme si associano una proposta di
+assegnazione alle otto risorse e un ordine di esecuzione.
+La disponibilità di una missione per la selezione non
+implica che possa iniziare immediatamente: il suo avvio
+può dipendere dal completamento di una missione precedente
+o dalla disponibilità dell'operatore.
+
+Lo scheduler confronta i programmi candidati simulandoli tramite
+la CTPN a partire dallo stesso stato osservato. La rete
+rappresenta le risorse già occupate, le precedenze e i
+tempi di esecuzione, consentendo di stimare il lavoro
+completabile nella finestra successiva.
+
+Si applica soltanto il programma selezionato. Le missioni
+presenti esclusivamente nelle alternative scartate
+rimangono disponibili per le decisioni successive.
+Il numero $n$ indica il numero di programmi alternativi
+valutati per la stessa finestra temporale.
+
+\subsection{Deadline constraint}
+
+La gestione delle deadline deve tenere conto degli istanti
+in cui le risorse diventano disponibili. Anche quando il
+lavoro iniziale viene distribuito in modo equilibrato, gli
+operatori possono terminarlo in momenti differenti, a causa
+delle diverse durate e dei percorsi richiesti. Un operatore
+libero può quindi iniziare una nuova attività mentre gli
+altri stanno ancora lavorando, senza attendere la
+conclusione dell'intero mini-batch.
+
+Questo comportamento è compatibile con una finestra
+temporale di durata fissata: il programma selezionato può
+prevedere avvii successivi, subordinati alla liberazione
+delle risorse. Per una missione $j$ assegnata alla risorsa
+$r$, si impone
+\begin{equation}
+	\widehat{s}_j \geq \widehat{a}_{r,k},
+\end{equation}
+dove $\widehat{s}_j$ è l'istante previsto di avvio e
+$\widehat{a}_{r,k}$ è l'istante previsto in cui la risorsa
+sarà disponibile, tenendo conto degli impegni già
+confermati e del vincolo di esclusività dell'ordine.
+Per una missione appartenente a un nuovo ordine, la risorsa
+è disponibile soltanto dopo il completamento dell'ordine
+precedentemente assegnato. Durante la simulazione, gli
+istanti di disponibilità vengono aggiornati evitando
+sovrapposizioni e rispettando le precedenze interne.
+
+Nella soluzione adottata, la CTPN mantiene la risorsa
+riservata all'ordine assegnato fino al completamento
+dell'ultima missione. Il termine di una missione consente
+il successivo avanzamento nello stesso ordine, ma non
+rende la risorsa disponibile per attività di altri ordini.
+
+La disponibilità fisica dell'operatore va quindi distinta
+dalla possibilità di assegnargli un nuovo ordine: anche
+nelle eventuali attese tra due missioni, l'operatore rimane
+riservato all'ordine in corso. Il vincolo di esclusività
+si mantiene anche quando l'ordine attraversa più finestre
+di schedulazione e decade soltanto al suo completamento.
+
+L'assegnazione di nuove attività deve comunque rispettare
+le deadline degli ordini già iniziati. Per ciascun ordine
+$o$, indicando con $S_o$ l'avvio effettivo della prima
+missione e con $D_o$ la durata massima consentita, si ha
+\begin{equation}
+	d_o = S_o + D_o,
+	\qquad
+	\widehat{C}_o \leq d_o,
+\end{equation}
+dove $\widehat{C}_o$ è l'istante previsto di completamento
+dell'ultima missione dell'ordine. La verifica deve
+considerare anche le missioni collocate oltre la finestra
+corrente e le eventuali attese tra un'attività e la
+successiva. La sola indisponibilità delle risorse occupate
+evita esecuzioni simultanee incompatibili, ma non
+garantisce il rispetto delle deadline.
+
+Se un ordine attraversa più finestre, la sua deadline
+rimane invariata: il passaggio al mini-batch successivo
+non azzera il tempo trascorso dal primo avvio. Devono
+essere conservati anche l'operatore assegnato e lo stato
+delle missioni ancora in corso.
+
+Gli avvii già previsti dal programma possono essere
+eseguiti dalla CTPN quando si verificano le condizioni
+necessarie. Se invece si vuole assegnare a una risorsa
+appena liberata un nuovo ordine non previsto dal programma,
+è necessario un aggiornamento della schedulazione attivato dal completamento,
+da affiancare alla ripianificazione periodica.
+
+
+
+\section{Reti di Petri per gli ordini}
+
+Nella prima implementazione, ogni missione era rappresentata
+mediante $r$ sottoreti di Petri, una per ciascuna delle $r$
+risorse eleggibili alla sua esecuzione. Il meccanismo di
+assegnazione selezionava una delle risorse candidate e ne
+riservava l'impiego per lo svolgimento della missione.
+Era pertanto necessario gestire i conflitti tra le
+assegnazioni candidate, evitando che una stessa risorsa
+fosse impegnata contemporaneamente in missioni differenti.
+
+La Figura~\ref{fig:pn2vecchiamissioni} illustra le sottoreti
+associate alle diverse alternative di assegnazione.
+Lo schema non rappresenta esplicitamente il meccanismo
+di selezione delle risorse e di risoluzione dei conflitti.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN2_VECCHIA_MISSIONI}
+	\caption{Schema delle sottoreti associate alle risorse
+		candidate per una missione nella precedente implementazione.}
+	\label{fig:pn2vecchiamissioni}
+\end{figure}
+
+Nella nuova implementazione, la modellazione viene
+organizzata a livello di ordine. Le missioni appartenenti
+allo stesso ordine sono rappresentate mediante sottoreti
+collegate in sequenza, secondo l'ordinamento definito
+dalle rispettive priorità. L'operatore assegnato all'ordine
+rimane associato a esso fino al suo completamento, anche
+quando le missioni vengono eseguite in finestre temporali
+differenti. Nella soluzione adottata, tale associazione
+è accompagnata da un vincolo di esclusività: l'operatore
+rimane riservato all'ordine fino al suo completamento.
+
+Come mostrato nella Figura~\ref{fig:pn1nuovamissioni},
+ciascuna sottorete di missione comprende tre transizioni e
+due posti interni. Tra due sottoreti consecutive viene
+inserito un posto aggiuntivo di precedenza, collegato
+in uscita alla transizione finale della missione $i$
+e in ingresso alla transizione iniziale della missione
+$i+1$. Il completamento della missione precedente
+deposita un token in tale posto, soddisfacendo la
+condizione di precedenza necessaria per l'avvio
+della missione successiva.
+
+Nell'esempio, la sequenza procede dal basso verso
+l'alto: la prima missione è rappresentata dalla sequenza
+$T1 \rightarrow P5 \rightarrow T2 \rightarrow P6 \rightarrow T3$.
+Lo scatto di $T3$ deposita un token in $P7$,
+soddisfacendo la condizione di precedenza per lo scatto
+di $T4$, transizione iniziale della seconda missione.
+Analogamente, lo scatto di $T6$ deposita un token in $P8$,
+soddisfacendo la condizione di precedenza per lo scatto
+di $T7$, transizione iniziale della terza missione.
+L'avvio di ciascuna missione resta subordinato anche
+alla disponibilità della risorsa assegnata e alle
+altre condizioni previste dal modello, non rappresentate
+in questo schema.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN1_NUOVA_MISSIONI}
+	\caption{Schema delle precedenze tra tre missioni
+		dello stesso ordine, eseguite dal basso verso l'alto.
+		Ogni sottorete comprende tre transizioni e due posti interni; i posti $P7$ e $P8$ collegano le sottoreti consecutive.}
+	\label{fig:pn1nuovamissioni}
+\end{figure}
+
+\noindent Questa modifica semplifica la logica di
+assegnazione degli ordini alle risorse: nella soluzione
+adottata, la risorsa assegnata rimane riservata fino
+al completamento di tutte le missioni dell'ordine.
+
+Una possibile estensione, orientata alla schedulazione
+online, consiste nell'introdurre un meccanismo di controllo
+basato su un token che consenta di rendere nuovamente
+disponibile la risorsa al termine di ciascuna missione.
+La risorsa potrebbe così eseguire attività appartenenti
+ad altri ordini, mantenendo l'associazione con l'ordine
+originario per le missioni ancora da completare.
+
+Tale estensione richiederebbe di rappresentare
+esplicitamente sia la disponibilità della risorsa sia
+lo stato di avanzamento degli ordini. L'eventuale
+introduzione di ulteriori posti e transizioni
+comporterebbe un ampliamento delle matrici che
+descrivono la rete e del vettore di marcatura,
+rendendo più articolata la gestione dei vincoli
+di assegnazione e di precedenza.
+
+\section{Assegnazione degli ordini rispetto alle deadline}
+
+Dopo aver introdotto il vincolo secondo cui tutte le missioni appartenenti
+allo stesso ordine devono essere eseguite dalla stessa risorsa, il problema
+di assegnazione viene affrontato direttamente a livello di ordine.
+
+L'obiettivo di questa fase non è pianificare una sequenza di decisioni future,
+ma determinare, nello stato corrente del sistema, la migliore associazione
+tra gli ordini da assegnare e le risorse disponibili.
+
+La procedura considera pertanto un singolo passo decisionale. A partire dagli
+ordini ancora assegnabili e dalle risorse disponibili vengono costruite
+diverse configurazioni ammissibili. Ciascuna configurazione specifica quale
+risorsa debba essere associata a ciascun ordine.
+
+Le missioni non costituiscono quindi variabili decisionali indipendenti.
+Esse vengono utilizzate per:
+
+\begin{itemize}
+	\item determinare le risorse compatibili con l'intero ordine;
+	\item definire la sequenza interna attraverso il parametro
+	\texttt{NM\_PRIORITY};
+	\item stimare il tempo necessario per completare l'ordine.
+\end{itemize}
+
+Una volta assegnata una risorsa a un ordine, tutte le missioni appartenenti
+a tale ordine vengono eseguite dalla stessa risorsa.
+
+\subsection{Generazione delle configurazioni candidate}
+
+La funzione \texttt{generateCandidateAssignments} costruisce differenti
+configurazioni di assegnazione ordine--risorsa.
+
+Per un ordine $o$, sia $\mathcal{M}_o$ l'insieme delle missioni che lo
+compongono e sia $\mathcal{R}_j$ l'insieme delle risorse compatibili con la
+missione $j$.
+
+Poiché tutte le missioni dell'ordine devono essere eseguite dalla stessa
+risorsa, l'insieme delle risorse compatibili con l'intero ordine è
+
+\begin{equation}
+	\mathcal{R}_o =
+	\bigcap_{j \in \mathcal{M}_o}
+	\mathcal{R}_j.
+\end{equation}
+
+Nel codice, tale intersezione viene ottenuta a partire dalle compatibilità
+calcolate dalla funzione \texttt{assignMission}:
+
+\begin{lstlisting}[language=Matlab]
+	common = availableResources;
+	
+	for row = rows'
+	common = intersect( ...
+	common, ...
+	eligibleMission{row});
+	end
+	
+	EligibleResources{i} = common;
+\end{lstlisting}
+
+Il risultato può essere, ad esempio,
+
+\begin{center}
+	\begin{tabular}{c|c}
+		\textbf{Ordine} & \textbf{Risorse compatibili} \\
+		\hline
+		$O_1$ & $\{R_1,R_3\}$ \\
+		$O_2$ & $\{R_2,R_3,R_4\}$ \\
+		$O_3$ & $\{R_1,R_4\}$
+	\end{tabular}
+\end{center}
+
+A partire da tali insiemi vengono generate diverse configurazioni ammissibili.
+
+Ad esempio:
+
+\begin{center}
+	\begin{tabular}{c|ccc}
+		& $O_1$ & $O_2$ & $O_3$ \\
+		\hline
+		$C_1$ & $R_1$ & $R_2$ & $R_4$ \\
+		$C_2$ & $R_3$ & $-$ & $R_1$ \\
+		$C_3$ & $-$ & $R_3$ & $-$
+	\end{tabular}
+\end{center}
+
+Alcuni costi della tebella non vengono assegnati per mancanza di risorse disponibili quindi nel caso limite dove esiste solo un operatore allora è quello ad avere il costo ottimo oppure quando non esistono risorse per quell'ordine quindi non viene scelto per l'assegnazione corrente.
+All'interno della stessa configurazione una risorsa non può essere associata
+contemporaneamente a due nuovi ordini.
+
+Una volta utilizzata, la risorsa viene quindi rimossa dall'insieme delle
+risorse ancora disponibili:
+
+\begin{lstlisting}[language=Matlab]
+	feasible = intersect( ...
+	orderInfo.EligibleResources{idx}, ...
+	freeResources);
+	
+	resource = feasible(randi(numel(feasible)));
+	
+	selectedOrders(end+1,1) = idx;
+	selectedResources(end+1,1) = resource;
+	
+	freeResources( ...
+	freeResources == resource) = [];
+\end{lstlisting}
+
+Il numero di configurazioni generate viene limitato attraverso il parametro
+\texttt{numberOfCandidates}, evitando di enumerare necessariamente tutte le
+possibili combinazioni.
+
+\subsubsection{Stima del tempo di esecuzione di un ordine}
+
+La valutazione di una configurazione richiede di stimare il tempo necessario
+a ciascuna risorsa per completare l'intero ordine ad essa assegnato.
+Per una coppia ordine--risorsa $(o,r)$ viene quindi simulata localmente la
+sequenza delle missioni appartenenti all'ordine.
+
+Indicando con $\mathcal{M}_o =
+\{m_1,m_2,\ldots,m_{n_o}\}$ la sequenza delle missioni dell'ordine, il tempo stimato è
+
+\begin{equation}
+	\hat{T}_{r,o}
+	=
+	\sum_{j=1}^{n_o}
+	T_{r,j},
+\end{equation}
+
+dove il tempo della missione successiva viene calcolato utilizzando come
+posizione iniziale la posizione finale raggiunta dalla risorsa nella
+missione precedente.
+
+Il calcolo può essere realizzato mediante una copia temporanea della
+posizione della risorsa:
+
+\begin{lstlisting}[language=Matlab]
+	tempResourcePos = resourcePos;
+	
+	estimatedDuration = 0;
+	
+	for k = 1:numel(orderRows)
+	
+		missionRow = orderRows(k);
+		
+		missionPlan = pathPlanning( ...
+		missions(missionRow,:), ...
+		planner, ...
+		occupancyMatrix, ...
+		tempResourcePos, ...
+		resource);
+		
+		estimatedDuration = estimatedDuration + missionPlan.Time;
+		path = missionPlan.Path{1};
+		tempResourcePos.position(resource,:) = path(end,:);
+	end
+\end{lstlisting}
+
+In questo modo la valutazione considera l'intero ordine come un'unica
+attività assegnata alla risorsa, pur utilizzando i percorsi delle singole
+missioni per stimarne la durata.
+
+\subsubsection{Confronto con la deadline}
+
+Per ciascun ordine $o$ viene definita una durata massima (\ref{eq:deadline}). Invece, per un ordine non ancora iniziato, il confronto tra una risorsa e un ordine
+può essere effettuato direttamente confrontando la durata stimata con la durata massima disponibile. Lo sforamento previsto è quindi
+
+\begin{equation}
+	L_{r,o}
+	=
+	\max
+	\left(
+	0,
+	\hat{T}_{r,o} - D_o
+	\right).
+\end{equation}
+
+Se $\hat{T}_{r,o} \leq D_o$ l'ordine risulta compatibile con la deadline per quella particolare
+assegnazione. È inoltre possibile definire lo slack
+
+\begin{equation}
+	S_{r,o}
+	=
+	D_o-\hat{T}_{r,o}.
+\end{equation}
+
+Un valore positivo indica un margine temporale residuo, mentre un valore
+negativo corrisponde a uno sforamento previsto.
+
+Ad esempio, per un ordine costituito da tre missioni e con
+$\tau=180$ s:
+
+\begin{equation}
+	D_o = 3 \cdot 180 = 540 \text{ s}.
+\end{equation}
+
+Se la risorsa $R_1$ richiede 470 s per completarlo, si ottiene
+
+\begin{equation}
+	S_{R_1,o}=540-470=70\text{ s}
+\end{equation}
+
+e quindi nessuno sforamento. Se invece $R_2$ richiede 590 s, allora conviene scegliere un'altra risorsa per il task:
+
+\begin{equation}
+	L_{R_2,o}
+	=
+	590-540
+	=
+	50\text{ s}.
+\end{equation}
+
+\subsection{Valutazione della configurazione}
+
+Per ogni configurazione $C_i$ vengono calcolati tre indicatori principali. 
+\begin{enumerate}
+	\item Il primo è il numero di ordini per i quali è previsto uno sforamento:
+	\begin{equation}
+		N_{\mathrm{late}}(C_i)
+		=
+		\sum_{o \in C_i}
+		\mathbf{1}
+		\left[
+		L_{r(o),o}>0
+		\right].
+	\end{equation}
+	\item Il secondo è il ritardo complessivo previsto:
+	
+	\begin{equation}
+		T_{\mathrm{late}}(C_i)
+		=
+		\sum_{o \in C_i}
+		L_{r(o),o}.
+	\end{equation}
+	\item Il terzo considera il tempo complessivo stimato degli ordini assegnati:
+	
+	\begin{equation}
+		T_{\mathrm{tot}}(C_i)
+		=
+		\sum_{o \in C_i}
+		\hat{T}_{r(o),o}.
+	\end{equation}
+\end{enumerate}
+
+\noindent La procedura di selezione viene eseguita secondo il seguente ordinamento dando priorità allo sforamento della deadline:
+
+\begin{enumerate}
+	\item minimizzazione del numero di ordini che superano la deadline;
+	\item minimizzazione dello sforamento temporale complessivo;
+	\item minimizzazione del tempo di esecuzione stimato.
+\end{enumerate}
+
+Nel codice MATLAB il confronto può essere implementato come
+
+\begin{lstlisting}[language=Matlab]
+	ranked = sortrows( ...
+	comparison, ...
+	{'LateOrders', ...
+		'TotalLateBy', ...
+		'TotalEstimatedTime'}, ...
+	{'ascend', ...
+		'ascend', ...
+		'ascend'});
+	
+	bestIndex = ranked.Candidate(1);
+\end{lstlisting}
+
+Non vengono quindi introdotti coefficienti di peso arbitrari.
+Il rispetto delle deadline costituisce direttamente il criterio principale
+della scelta.
+
+\subsubsection{Applicazione della configurazione selezionata}
+
+Una volta individuata la configurazione migliore, la funzione
+\texttt{applyCandidateAssignment} registra le associazioni ordine--risorsa
+nello stato della simulazione.
+
+La decisione rimane a livello di ordine. L'assegnazione viene successivamente
+propagata alle righe della tabella delle missioni appartenenti allo stesso
+ordine, poiché la struttura dati del simulatore conserva una riga per ogni
+missione.
+
+Una possibile implementazione è:
+
+\begin{lstlisting}[language=Matlab]
+	function state = ...
+	applyCandidateAssignment(state,candidate)
+	
+	for i = 1:height(candidate)
+	
+	orderKey = ...
+	string(candidate.OrderKey(i));
+	
+	resource = ...
+	candidate.Resource(i);
+	
+	orderRow = find( ...
+	state.Orders.OrderKey == orderKey);
+	
+	% L'ordine non deve essere gia' iniziato
+	assert( ...
+	isnan(state.Orders.StartTime(orderRow)));
+	
+	rows = find( ...
+	state.OrderIndex == orderRow);
+	
+	pendingRows = rows( ...
+	state.Missions.Status(rows) ...
+	== "pending");
+	
+	% La decisione e' ordine -> risorsa.
+	% Tutte le missioni ereditano il proprietario
+	% dell'ordine.
+	state.Missions. ...
+	assignedResource(pendingRows) = ...
+	resource;
+	
+	state.Orders.Resource(orderRow) = ...
+	resource;
+	end
+	
+	end
+\end{lstlisting}
+
+La funzione non modifica direttamente né l'istante di avvio
+\texttt{StartTime} né la deadline dell'ordine.
+
+Questi valori vengono determinati solamente quando la prima missione
+dell'ordine viene effettivamente avviata dal simulatore temporale. La procedura finale diventa quindi:
+\begin{enumerate}
+	\item Ordini disponibili;
+	\item Configurazioni ammissibili;
+	\item Stima delle durate;
+	\item Verifica delle deadline;
+	\item Configurazione migliore.
+\end{enumerate}
+L'approccio considera pertanto esclusivamente la decisione di assegnazione
+corrente e non introduce, in questa fase, una pianificazione di più decisioni
+future.

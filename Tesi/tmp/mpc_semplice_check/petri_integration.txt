@@ -1,0 +1,114 @@
+﻿\section{Integrazione con le reti di Petri esistenti}
+\label{sec:mpc-petri}
+
+La rete di Petri colorata può diventare il \textbf{modello con cui l'MPC valuta i candidati}. L'MPC propone le missioni e le loro sequenze; la rete verifica quali avvii sono consentiti e simula l'evoluzione delle risorse. Il motore temporale calcola quando avvengono gli eventi. Non occorre sostituire la rete con un modello lineare per realizzare questo tipo di controllo predittivo.
+
+L'integrazione qui descritta è una proposta di modifica dei componenti letti nella cartella \texttt{sim}: non è ancora un'interfaccia implementata.
+
+\subsection{La struttura già presente}
+
+La funzione \texttt{generateMatrices.m} costruisce un modulo con tre transizioni e due posti interni per ogni missione. I moduli condividono il posto delle risorse, indicato come \texttt{p1} dal simulatore. In termini operativi, il percorso di una missione può essere letto così:
+\[
+\begin{gathered}
+\text{risorsa disponibile}
+\longrightarrow \text{avvio della missione}
+\longrightarrow \text{esecuzione}\\
+\longrightarrow \text{fine della missione}
+\longrightarrow \text{risorsa nuovamente disponibile}.
+\end{gathered}
+\]
+
+I colori distinguono le risorse. Un token del colore associato all'operatore 3 rappresenta quella specifica risorsa, non un operatore generico intercambiabile. Questa informazione permette di mantenere l'identità dell'esecutore durante l'evoluzione della missione.
+
+La funzione \texttt{coloredPetri.m} fa evolvere il modello usando marcatura, archi, transizioni e dati del batch. Le funzioni \texttt{next\_transition\_c.m} e \texttt{next\_place\_c.m} aggiornano la rete; il path planner contribuisce a stimare i tempi e gli spostamenti. Il componente \texttt{r\_conflict\_colored.m} risolve i conflitti scegliendo attualmente, tra le risorse disponibili considerate, quella con minore tempo accumulato.
+
+\subsection{Il punto in cui interviene l'MPC}
+
+Supponiamo che due missioni $A_1$ e $B_1$ possano usare la stessa risorsa libera. La rete esprime il conflitto: entrambe sono possibili, ma non possono occupare contemporaneamente quella risorsa. L'MPC confronta programmi che privilegiano l'una o l'altra e sceglie quale avviare prima.
+
+Occorre quindi separare due domande:
+\begin{itemize}
+    \item \textbf{La missione può partire?} Rispondono la rete e i controlli di compatibilità, precedenza e proprietà dell'ordine.
+    \item \textbf{Tra le missioni che possono partire, quale deve partire?} Risponde il programma candidato generato dall'MPC.
+\end{itemize}
+
+Indichiamo con $E(x)$ le coppie missione--risorsa abilitate dalla rete nello stato $x$ e con $D(x,u)$ quelle autorizzate dal programma $u$. Gli avvii consentiti sono
+\begin{equation}
+    E_{\mathrm{avvio}}(x,u)=E(x)\cap D(x,u).
+\end{equation}
+
+La selezione deve inoltre evitare che più avvii simultanei consumino lo stesso token. Il programma non rende eseguibile una transizione priva delle risorse necessarie: può scegliere e limitare avvii abilitati, non forzarne uno impossibile.
+
+Operativamente, \texttt{r\_conflict\_colored.m} dovrà ricevere il candidato, le code per risorsa e i vincoli d'ordine. La sua regola locale sul carico potrà essere usata per costruire un candidato o risolvere parità consentite; non dovrà sostituire autonomamente la sequenza o l'operatore che si stanno valutando. Diversamente, l'MPC crederebbe di simulare un programma mentre la rete ne esegue un altro.
+
+Le missioni residue non selezionate restano nel registro globale ma non sono autorizzate ad avviarsi in quella prova. Se il programma usa code rigide, una missione successiva non supera automaticamente quella in testa: un eventuale superamento deve essere una regola esplicita, identica nella previsione e nell'esecuzione.
+
+\subsection{Marcatura e tempo: che cosa deve contenere lo stato}
+
+La marcatura indica dove si trovano i token, ma da sola non dice quanto manca alla fine di una missione. Per riprendere correttamente una simulazione serve uno stato più completo:
+\begin{equation}
+    x=(t,m,\mathcal{L},\mathcal{Q},\mathcal{G},\mathcal{P}),
+\end{equation}
+ove $t$ è l'ora, $m$ la marcatura colorata, $\mathcal{L}$ gli eventi pendenti con i loro tempi, $\mathcal{Q}$ le code e gli impegni, $\mathcal{G}$ il registro ordini e $\mathcal{P}$ le posizioni e le fasi operative delle risorse. Si conservano inoltre gli stati interni modificabili del simulatore, come gli archi residui e l'avanzamento delle transizioni.
+
+Nella rete non colorata, usando la convenzione posti per righe e transizioni per colonne, il bilancio di uno scatto abilitato è
+\begin{equation}
+    m^+=m+(Post-Pre)v.
+\end{equation}
+
+Nel codice \texttt{pre\_m} e \texttt{post\_m} hanno invece le transizioni sulle righe: per un bilancio aggregato con marcatura colonna si usa la matrice trasposta. La rete colorata richiede anche le trasformazioni dei colori presenti negli archi. Il bilancio dei token non sostituisce né la verifica di abilitazione né la temporizzazione degli eventi.
+
+Quando parte una missione, si occupa la risorsa e si programma il relativo avanzamento temporale. Il completamento avviene al tempo determinato dalla durata prevista o effettiva. L'MPC non può scegliere di anticipare arbitrariamente una transizione di completamento per ridurre il costo.
+
+Nel motore attuale, \texttt{next\_transition\_c.m} richiama il path planner e \texttt{updateBatch.m}; quest'ultima accumula la durata e porta \texttt{resourcePos} alla fine del percorso. Questo aggiornamento può rappresentare l'avanzamento di una \emph{previsione}, ma non va interpretato come una posizione già osservata prima che il movimento termini. Per l'esecuzione online devono essere distinti avvio, posizione prevista e completamento effettivo.
+
+\subsection{Come simulare gli $n$ candidati sulla rete}
+
+Per ciascuna alternativa la procedura è:
+\begin{enumerate}
+    \item creare una copia indipendente dello stato osservato $x_k$;
+    \item costruire o selezionare i moduli delle missioni del candidato, conservando gli eventuali impegni già attivi;
+    \item collegare le transizioni alle missioni mediante identificativi stabili, perché l'indice locale della transizione può cambiare tra candidati;
+    \item passare alla rete il programma $u_{k+1}^{(i)}$, cioè selezione, code e assegnazioni;
+    \item far evolvere la rete e il motore temporale, aggiornando avvii, completamenti, disponibilità e registro ordini;
+    \item raccogliere tempi e stato finale previsto per calcolare il costo $J_i$.
+\end{enumerate}
+
+Le matrici strutturali non modificate possono essere condivise; marcatura, archi consumati, code, registro ordini e posizioni devono essere indipendenti tra prove. Anche un oggetto con stato interno modificabile non deve trasmettere a un candidato gli effetti della simulazione precedente.
+
+Con $H>1$, la continuazione della riga $i$ parte dal suo stato finale previsto. Il candidato $i+1$ riparte invece sempre dalla stessa fotografia iniziale $x_k$. Questa distinzione evita di confondere l'avanzamento lungo una previsione con il confronto tra previsioni alternative.
+
+Se si genera una rete ridotta per ciascun candidato, non si devono ricreare otto risorse libere quando alcune sono impegnate. Al confine tra batch completamente conclusi si possono riutilizzare i moduli di missione aggiornando le posizioni; durante un batch occorre trasferire anche token occupati, eventi pendenti e tempi residui.
+
+\subsection{Operatore unico e registro degli ordini}
+
+Il rilascio del token alla fine di una missione significa che l'operatore è libero per un nuovo lavoro. Non significa che l'ordine possa essere affidato a un altro operatore. Il vincolo tra ordine e risorsa deve sopravvivere al rilascio del token.
+
+La funzione già presente \texttt{createOrderRegistry.m} prepara campi utili a questo scopo: \texttt{assignedOperator}, \texttt{status}, \texttt{completedMissionCount}, \texttt{firstStartSeconds}, \texttt{completionSeconds} e \texttt{maxDurationSeconds}. La loro inizializzazione non impone ancora il vincolo durante lo scatto delle transizioni: devono essere letti e aggiornati dal motore operativo.
+
+Per ogni avvio della missione $j$ dell'ordine $o$, si verifica che la risorsa sia quella registrata per $o$. Se l'assegnazione non è ancora impegnata, viene fissata secondo la politica scelta. Al primo avvio si registra $S_o$; per una durata massima presente si determina la scadenza $S_o+D_o$. Ai completamenti si aggiornano i conteggi e si chiude l'ordine solo quando sono terminate tutte le sue missioni.
+
+Per esempio, $A_1$ viene eseguita dall'operatore 3 nel batch $k+1$ e $A_2$ resta per $k+2$. Dopo $A_1$, il token della risorsa 3 torna disponibile, ma il registro conserva l'associazione $A\mapsto3$. Un candidato che assegni $A_2$ all'operatore 5 deve essere scartato, anche se la rete di base considera quella risorsa compatibile.
+
+\subsection{Previsione e impianto simulato}
+
+La stessa logica di rete può servire per predire e per simulare l'esecuzione, mantenendo però stati separati. La previsione usa le durate stimate disponibili; l'impianto simulato realizza i disturbi. Il predittore non deve conoscere in anticipo le durate effettive future.
+
+Dopo il confronto, alla rete operativa si passa \textbf{il programma del candidato scelto}, non la sua marcatura finale prevista. La rete esegue quel programma e genera i completamenti effettivi. Solo queste osservazioni aggiornano lo stato operativo da cui riparte l'MPC.
+
+\subsection{Interfaccia proposta e modifiche necessarie}
+
+Una possibile interfaccia concettuale è
+\[
+    (\widehat x_f,\mathrm{eventi},\mathrm{indicatori},\mathrm{esito})
+      =\operatorname{simulaCPN}(x_k,u,\mathrm{modelloTempi}).
+\]
+
+Non è una funzione già disponibile. L'esito deve distinguere completamento del candidato, arresto a un limite temporale, blocco e budget esaurito. Se restano missioni richieste, l'assenza di una transizione avviabile non implica necessariamente la fine: potrebbe esserci un completamento futuro nella lista eventi. Un blocco si segnala quando il lavoro non può progredire con il programma e gli eventi disponibili.
+
+\texttt{coloredPetri.m} oggi inizializza variabili interne a ogni chiamata e restituisce schedule, batch, posizioni e missioni non svolte. Per l'uso predittivo online va reso capace di ricevere e restituire anche lo stato riprendibile e un programma esplicito. L'elenco \texttt{notDoneMissions} non sostituisce lo stato delle missioni eventualmente in corso.
+
+L'ordine pratico degli interventi è quindi: rendere esplicito lo stato del simulatore; introdurre il filtro MPC sugli avvii; collegare il registro ordini; separare aggiornamenti previsti ed effettivi; infine aggiungere il ciclo che simula e confronta gli $n$ candidati. I file del simulatore non vengono modificati da questo documento.
+
+Prima di valutare i miglioramenti sui tempi, si devono controllare quattro proprietà: simulare due volte lo stesso candidato dallo stesso stato produce lo stesso esito nominale; invertire l'ordine delle prove non cambia i loro risultati; un ordine mantiene l'operatore anche attraversando più batch; interrompere e riprendere la simulazione produce gli stessi eventi di un'esecuzione continua, a decisioni e disturbi fissati.
+

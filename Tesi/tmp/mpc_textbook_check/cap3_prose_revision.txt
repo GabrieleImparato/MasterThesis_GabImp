@@ -1,0 +1,31 @@
+﻿L'obiettivo del presente lavoro è estendere l'approccio di schedulazione sviluppato in precedenza, affiancando alla pianificazione dell'intera giornata lavorativa una ripianificazione su finestre temporali di durata ridotta, ad esempio pari a 30 minuti. In questo contesto, il numero di operatori e carrelli elevatori è fissato a \textbf{otto}; l'ottimizzazione riguarda quindi la selezione delle missioni ancora da svolgere, la loro distribuzione tra le risorse disponibili e il relativo ordine di esecuzione. Lo scopo è utilizzare efficacemente il tempo disponibile, riducendo spostamenti e attese e favorendo il completamento del lavoro.
+
+Al termine della finestra $k$, il sistema acquisisce lo stato aggiornato del magazzino e costruisce $n$ mini-batch candidati per la finestra $k+1$. Ogni candidato contiene un sottoinsieme delle missioni residue, accompagnato da una proposta di assegnazione e sequenziamento. I sottoinsiemi possono condividere alcune missioni e combinare attività appartenenti a ordini diversi, purché ne rispettino i vincoli. Le alternative vengono simulate a partire dallo stesso stato iniziale e confrontate rispetto alle prestazioni previste e al limite temporale della finestra. Soltanto il programma selezionato viene applicato all'esecuzione.
+
+È utile distinguere la \textit{finestra temporale}, che stabilisce l'intervallo entro cui il sistema opera prima del successivo aggiornamento, dal \textit{mini-batch}, che identifica l'insieme delle missioni candidate a essere eseguite in tale intervallo. Una finestra di durata fissata non corrisponde necessariamente a un numero costante di missioni. Inoltre, la sua conclusione non implica automaticamente che tutte le attività avviate siano terminate: gli eventuali lavori ancora in corso devono essere conservati nello stato e considerati come impegni già assunti nella successiva pianificazione.
+
+L'integrazione tra \textit{Model Predictive Control} (MPC) e \textit{Colored Timed Petri Nets} (CTPN), ossia reti di Petri colorate temporizzate, permette di separare le decisioni di schedulazione dalla rappresentazione dell'esecuzione. L'MPC genera e confronta i programmi candidati, mentre la CTPN ne simula l'evoluzione temporale e verifica l'abilitazione delle attività in base alla disponibilità delle risorse e ai vincoli rappresentati nel modello. Nel seguito, i termini \textit{operatore} e \textit{risorsa} sono usati in maniera intercambiabile, assumendo che ogni risorsa rappresenti un operatore con il relativo carrello elevatore.
+
+\section{Ordini e missioni}
+
+Ogni ordine è costituito da una o più missioni, ciascuna associata al relativo identificativo d'ordine. Il primo vincolo richiede che tutte le missioni appartenenti allo stesso ordine siano eseguite da un unico operatore, dalla prima all'ultima attività. L'associazione tra ordine e risorsa deve quindi essere mantenuta anche quando l'esecuzione si estende su più finestre temporali. Tale vincolo non impedisce a un operatore di gestire più ordini, ma esclude che un ordine già iniziato venga suddiviso tra operatori diversi.
+
+Le singole missioni presentano il parametro \texttt{NM\_PRIORITY}, che ne specifica la priorità: a un valore numerico maggiore corrisponde una precedenza più elevata. Nella formulazione adottata, le missioni di ciascun ordine vengono pertanto eseguite in ordine di priorità decrescente. Il confronto riguarda esclusivamente missioni appartenenti allo stesso ordine; non introduce una graduatoria tra ordini differenti, ai quali non è associata una priorità esplicita nei dati.
+
+Per limitare il tempo che intercorre tra l'avvio di un ordine e il suo completamento, si introduce un limite di durata definito in fase di configurazione, poiché tale informazione non è presente nelle basi dati fornite. Una possibile stima iniziale consiste nel moltiplicare il numero di missioni dell'ordine per una durata di riferimento della singola missione:
+\begin{equation}
+    D_o=m_o\,\overline{\tau},
+\end{equation}
+dove $m_o$ è il numero di missioni dell'ordine $o$ e $\overline{\tau}$ è un tempo di esecuzione rappresentativo, espresso nella stessa unità di misura di $D_o$. Questa relazione costituisce un criterio iniziale da verificare sui dati: una durata media non garantisce, da sola, che il limite sia compatibile con percorsi, attese e caratteristiche delle missioni. Il valore ottenuto deve quindi poter essere verificato ed eventualmente modificato manualmente.
+
+Il limite $D_o$ rappresenta una durata massima, mentre la \textit{deadline} è l'istante entro cui l'ordine deve terminare. Indicando con $S_o$ l'avvio effettivo della prima missione e con $C_o$ il completamento dell'ultima, si definiscono
+\begin{equation}
+    d_o=S_o+D_o,
+    \qquad C_o\leq d_o.
+\end{equation}
+Il tempo trascorso comprende anche le attese tra le missioni dell'ordine, ma non l'attesa precedente al suo primo avvio. Il rispetto di questo limite deve pertanto essere affiancato agli obiettivi di completamento del lavoro, per evitare che ordini non ancora iniziati vengano rinviati ripetutamente.
+
+Un ordine può attraversare più finestre temporali. In tal caso, a ogni aggiornamento si conservano l'operatore assegnato, le missioni già completate, quelle ancora da svolgere e la deadline originaria. Quest'ultima non viene ricalcolata a partire dall'inizio della nuova finestra: il tempo disponibile continua a decorrere dal primo avvio dell'ordine.
+
+Per favorire la chiusura degli ordini già iniziati, il controllore può introdurre un criterio di preferenza basato sul tempo rimanente alla scadenza e sul lavoro necessario per completarli. Tale criterio riguarda la scelta dei mini-batch e rappresenta un'urgenza calcolata dallo scheduler; non modifica il parametro \texttt{NM\_PRIORITY} delle missioni e non attribuisce agli ordini una priorità originariamente presente nei dati. La preferenza per un ordine aperto deve essere valutata insieme ai tempi complessivi e alla disponibilità delle risorse, senza trasformarsi automaticamente nell'obbligo di completarlo prima di avviare qualsiasi altro ordine.
+

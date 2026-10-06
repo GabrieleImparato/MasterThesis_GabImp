@@ -1,0 +1,1060 @@
+Il presente capitolo descrive l'implementazione in MATLAB del simulatore
+presentato nel capitolo precedente. L'attenzione è rivolta al passaggio dai
+vincoli progettuali alle strutture dati, alle funzioni e agli aggiornamenti
+di stato che producono il programma di esecuzione delle missioni.
+La descrizione fa riferimento al percorso effettivamente attivato da
+\texttt{main.m}: assegnazione offline degli ordini, suddivisione in batch
+statici, esecuzione con \texttt{colored\allowbreak Petri} e valutazione delle deadline
+mediante una previsione euclidea congelata al primo avvio riuscito.
+
+La persistenza riguarda il lavoro cumulato, le posizioni delle risorse,
+gli storici e le deadline. La rete e la marcatura vengono invece ricostruite
+per ogni batch. I moduli del motore temporale alternativo presenti nel
+progetto non sono richiamati dal flusso principale; di conseguenza, finestre
+di osservazione, tempi residui e controllo a orizzonte mobile non descrivono
+il funzionamento corrente.
+
+\section{Organizzazione del software}
+\label{sec:impl-organizzazione}
+
+Lo script principale individua la propria directory e aggiunge al percorso
+di ricerca MATLAB le cartelle dei moduli utilizzati. I nomi del file Excel
+e delle immagini sono risolti rispetto a tale directory, evitando di far
+dipendere la lettura degli ingressi dalla cartella di lavoro corrente.
+La Tabella~\ref{tab:impl-moduli} riassume la ripartizione delle responsabilità.
+
+\begin{table}[htbp]
+	\centering
+	\small
+	\begin{tabularx}{\linewidth}{@{}p{4.1cm}X@{}}
+		\toprule
+		Modulo & Responsabilità nel flusso attivo \\
+		\midrule
+		\texttt{main.m} & Configurazione, coordinamento dei batch e riepiloghi. \\
+		\texttt{import\allowbreak Excel} & Lettura delle colonne e normalizzazione dell'ordine. \\
+		\texttt{model\allowbreak Generation} & Compatibilità, proprietari degli ordini, matrici e archi. \\
+		\texttt{batching} & Suddivisione della lista mantenendo gli ordini interi. \\
+		\texttt{colored\_\allowbreak petri\_\allowbreak nets3} & Scatto delle transizioni, marcatura e cronologia. \\
+		\texttt{optimization} & Risoluzione dei conflitti e rami storici di blocco delle risorse. \\
+		\texttt{path\allowbreak Plan} & Mappa, coordinate, raggiungibilità e A*. \\
+		\texttt{utility} & Preparazione, aggiornamenti, deadline e grafici. \\
+		\bottomrule
+	\end{tabularx}
+	\caption{Organizzazione dei moduli richiamati dalla simulazione.}
+	\label{tab:impl-moduli}
+\end{table}
+
+Il nome della cartella \texttt{optimization} non implica che il programma
+risolva un problema di ottimizzazione globale. Con il proprietario già fissato,
+la risoluzione dei conflitti deve rispettare il colore assegnato all'ordine.
+Analogamente, \texttt{plot\allowbreak Temporal\allowbreak Results} è una funzione grafica usata anche
+nel flusso statico: il nome non implica l'attivazione del motore a finestre.
+
+Le cartelle \texttt{tests}, \texttt{docs} e \texttt{tmp} contengono
+rispettivamente verifiche, documentazione e materiali di lavoro. La cartella
+\texttt{temporal} conserva il motore alternativo. Questi componenti vanno
+distinti dalle dipendenze necessarie per eseguire lo script principale.
+
+\subsection{Configurazione dell'esperimento}
+
+La configurazione imposta otto risorse, la soglia di blocco a infinito e
+la visualizzazione dei grafici attiva. Il riferimento di otto ore e la durata
+nominale di 180 secondi vengono passati alla divisione in batch, ma la
+possibilità di ridurre automaticamente il numero di risorse è disabilitata.
+Pertanto non introducono un arresto del motore al termine del turno.
+
+Per le deadline sono configurati un fattore di percorrenza di 5.5 celle al
+secondo, una maggiorazione del 20\%, un contributo accessorio di 60 secondi
+e un margine aggiuntivo nullo per missione. Il campo
+\texttt{Distance\allowbreak Metric} riporta il valore euclideo; la funzione invocata
+calcola direttamente norme euclidee. La modifica della sola stringa non
+seleziona un diverso algoritmo di stima.
+
+Gli ingressi della configurazione corrente sono
+\texttt{excel\_\allowbreak files/1su11.xlsx} e le immagini
+\texttt{map1\_\allowbreak 1\allowbreak Filled.png} e \texttt{map1\_\allowbreak 1.png} nella cartella
+\texttt{path\allowbreak Plan}. L'esecuzione richiede che MATLAB disponga delle funzioni
+per la lettura del foglio e delle classi \texttt{binary\allowbreak Occupancy\allowbreak Map} e
+\texttt{planner\allowbreak AStar\allowbreak Grid}. La versione dell'ambiente e la disponibilità di
+queste dipendenze fanno parte delle condizioni di riproducibilità.
+
+\subsubsection{Estratto di implementazione}
+
+Il Listing~\ref{lst:impl-configurazione} riporta la configurazione effettivamente
+utilizzata dallo script principale. In particolare, i parametri della previsione
+temporale sono separati sia dal limite di otto ore sia dai parametri del batching.
+
+\begin{lstlisting}[language=Matlab,caption={Configurazione principale e modello delle deadline.},label={lst:impl-configurazione}]
+	numberOfResources = 8;
+	averageT          = 180;
+	maxT              = 8*3600;
+	threshold         = Inf;
+	showPlots         = true;
+	
+	deadlineModel.CellsPerSecond          = 5.5;
+	deadlineModel.TravelMarginRatio       = 0.20;
+	deadlineModel.HandlingSeconds         = 60;
+	deadlineModel.MarginSecondsPerMission = 0;
+	deadlineModel.DistanceMetric          = "euclidean";
+	
+	workFlow = importFromExcel( ...
+	fullfile(projectRoot,'excel_files','1su11.xlsx'));
+	
+	[map,map_clear,costMap,signFollowerMap,occupancyMatrix] = ...
+	computeMap( ...
+	fullfile(projectRoot,'pathPlan','map1_1Filled.png'), ...
+	fullfile(projectRoot,'pathPlan','map1_1.png'));
+\end{lstlisting}
+
+\section{Importazione e preparazione delle missioni}
+\label{sec:impl-importazione}
+
+\subsection{Lettura del foglio e normalizzazione delle colonne}
+
+\texttt{import\allowbreak From\allowbreak Excel} legge il contenuto del foglio mediante
+\texttt{xlsread}, interpreta la prima riga come intestazione e trasforma i
+nomi delle colonne in maiuscolo eliminando gli spazi esterni. Sono richiesti
+il codice missione e le quattro coordinate FROM e TO. La conversione dei
+relativi valori presuppone una rappresentazione numerica coerente; non è
+implementato un validatore generale di qualsiasi schema Excel.
+
+Per l'identificativo dell'ordine viene cercata la prima colonna disponibile
+tra \texttt{ID\_\allowbreak ORDER}, \texttt{OID\_\allowbreak ORDER} e \texttt{CD\_\allowbreak ORDER}, in questo
+ordine. I valori della colonna scelta vengono convertiti in stringhe ed
+esposti internamente come \texttt{ID\_\allowbreak ORDER}. La ricerca seleziona una
+colonna per l'intero foglio: una cella vuota nella prima colonna disponibile
+non viene riempita con il valore di una colonna alternativa.
+
+In assenza di una colonna d'ordine riconosciuta viene emesso un avviso.
+Gli identificativi mancanti vengono normalizzati a stringhe vuote, mentre
+le missioni corrispondenti restano attività indipendenti. La priorità è
+ricavata da \texttt{NM\_\allowbreak PRIORITY}; se la colonna o un valore sono mancanti,
+si usa la priorità unitaria.
+
+\subsection{Schema e identità delle missioni}
+
+\texttt{define\allowbreak Missions} costruisce una tabella con i campi
+\texttt{mission\allowbreak Code}, \texttt{priority}, \texttt{mission\allowbreak From},
+\texttt{mission\allowbreak To}, \texttt{order\allowbreak Id} e \texttt{mission\allowbreak Uid}.
+Gli estremi FROM e TO sono sottotabelle con le rispettive coordinate;
+l'UID è un identificativo numerico positivo e univoco della singola
+occorrenza. Se non è già presente viene generato dalla posizione della
+riga, prima del filtraggio e dell'ordinamento.
+
+Questa distinzione è necessaria perché il codice commerciale può ripetersi.
+Due righe con lo stesso \texttt{mission\allowbreak Code} non vengono automaticamente
+fuse in una sola attività. L'UID permette di aggiornare la riga corretta
+nello stato delle deadline anche quando la lista viene riordinata.
+
+\subsubsection{Costruzione della tabella delle missioni}
+
+Il codice seguente mostra come l'identità stabile venga creata prima del
+filtraggio. L'UID non dipende quindi dal successivo ordinamento per ordine
+e priorità.
+
+\begin{lstlisting}[language=Matlab,caption={Costruzione dei campi principali e dell'identificativo univoco.},label={lst:impl-define-missions}]
+	missionFrom = workFlow(:, {'FROM_X','FROM_Y'});
+	missionTo   = workFlow(:, {'TO_X','TO_Y'});
+	
+	priority = workFlow.NM_PRIORITY;
+	priority(ismissing(priority)) = 1;
+	
+	missionCode = workFlow.CD_MISSION;
+	orderId = string(workFlow.ID_ORDER);
+	
+	if ismember('missionUid',workFlow.Properties.VariableNames)
+	missionUid = workFlow.missionUid;
+	else
+	missionUid = (1:height(workFlow))';
+	end
+	
+	validateattributes(missionUid, ...
+	{'numeric'},{'column','positive','integer','finite'});
+	
+	assert(numel(unique(missionUid)) == height(workFlow), ...
+	'Mission UIDs must be unique.');
+	
+	missionList = table( ...
+	missionCode,priority,missionFrom,missionTo,orderId,missionUid);
+\end{lstlisting}
+
+\subsection{Correzione e ammissibilità delle coordinate}
+
+La preparazione applica dapprima l'euristica di correzione della scala:
+le coordinate maggiori di 999 vengono divise per 1000 e arrotondate.
+La regola deriva dalla rappresentazione dei dati disponibili e deve essere
+verificata per nuovi fogli, perché non distingue un errore di importazione
+da una coordinata realmente distante.
+
+Successivamente ogni coordinata finita esterna al dominio viene riportata
+entro i limiti della mappa. I valori non finiti restano invalidi. La funzione
+restituisce due tabelle: \texttt{mission\allowbreak List}, contenente le attività
+ammesse, e \texttt{discarded\allowbreak Missions}, contenente quelle escluse.
+La dicitura stampata relativa alle missioni fuori mappa va letta alla luce
+di questa correzione: una coordinata finita esterna può essere ammessa dopo
+la proiezione, mentre una coordinata non finita non viene recuperata.
+
+Le attivit? escluse non generano sottoreti e non vengono inserite nello
+stato iniziale delle deadline del flusso corrente. Il loro conteggio
+è quindi separato dal completamento degli ordini nel riepilogo finale.
+Se la tabella delle missioni ammesse è vuota, lo script emette un avviso e
+termina prima di avviare il motore.
+
+\subsubsection{Validazione geometrica}
+
+La separazione fra attività ammesse ed escluse è implementata mediante una
+maschera logica costruita sulle quattro coordinate.
+
+\begin{lstlisting}[language=Matlab,caption={Validazione delle coordinate in \texttt{defineMissions}.},label={lst:impl-validazione-coordinate}]
+	xy = workFlow{:, {'FROM_X','FROM_Y','TO_X','TO_Y'}};
+	
+	finiteCoordinates = all(isfinite(xy),2);
+	
+	positiveCoordinates = ...
+	xy(:,1)>=1 & xy(:,2)>=1 & ...
+	xy(:,3)>=1 & xy(:,4)>=1;
+	
+	insideMap = ...
+	xy(:,1)<=maxX & xy(:,2)<=maxY & ...
+	xy(:,3)<=maxX & xy(:,4)<=maxY;
+	
+	valid = finiteCoordinates & ...
+	positiveCoordinates & insideMap;
+	
+	discardedMissions = missionList(~valid,:);
+	missionList       = missionList(valid,:);
+\end{lstlisting}
+
+\subsection{Raggruppamento stabile e priorità}
+
+\texttt{group\allowbreak Missions\allowbreak By\allowbreak Order} assegna agli ordini il rango della loro prima
+comparsa, crea gruppi distinti per le missioni senza ordine e ordina secondo
+tre chiavi: gruppo, priorità decrescente e posizione originale.
+Si conservano così sia l'ordine tra gli ordini sia la stabilità delle
+missioni con priorità uguale.
+
+La priorità non è un criterio globale per scegliere tra ordini diversi.
+Determina la sequenza interna dell'ordine, che sarà imposta anche dai posti
+di collegamento della rete. Il raggruppamento viene applicato prima della
+suddivisione e nuovamente al batch corrente dopo eventuali reinserimenti.
+
+\subsubsection{Ordinamento stabile nel codice}
+
+La funzione assegna un gruppo distinto anche alle missioni prive di ordine.
+La terza colonna fornita a \texttt{sortrows} conserva la posizione originaria
+come criterio di spareggio.
+
+\begin{lstlisting}[language=Matlab,caption={Raggruppamento stabile per ordine e priorità.},label={lst:impl-group-orders}]
+	ids = strip(string(missions.orderId));
+	[~,~,groups] = unique(ids,'stable');
+	
+	missing = ismissing(ids) | ids=="" | strcmpi(ids,"NaN");
+	groups(missing) = max(groups) + (1:nnz(missing));
+	
+	[~,~,groups] = unique(groups,'stable');
+	
+	missions.priority(ismissing(missions.priority)) = 1;
+	
+	[~,indices] = sortrows( ...
+	[groups,-missions.priority,(1:height(missions))']);
+	
+	missions = missions(indices,:);
+\end{lstlisting}
+
+\section{Assegnazione offline e batch}
+\label{sec:impl-assegnazione}
+
+\subsection{Compatibilità e proprietario dell'ordine}
+
+\texttt{define\allowbreak Attitude} costruisce i limiti geometrici delle risorse.
+Nella configurazione corrente questi limiti coincidono per tutte le risorse.
+\texttt{assign\allowbreak Mission} controlla l'appartenenza delle coordinate FROM al
+rettangolo operativo di ciascuna risorsa. Il controllo non riguarda
+l'esistenza di un percorso e non verifica separatamente il TO come vincolo
+di compatibilità: la fattibilità spaziale viene valutata dal pianificatore.
+
+\texttt{assign\allowbreak Orders} considera tutte le missioni di ogni ordine e calcola
+l'intersezione delle risorse compatibili. Se l'intersezione è vuota solleva
+un errore, senza distribuire parzialmente l'ordine. Altrimenti sceglie la
+risorsa con il minor numero di missioni già attribuite; a parità prevale
+l'indice più piccolo.
+
+La risorsa scelta viene scritta nel campo \texttt{assigned\allowbreak Resource} di
+tutte le missioni dell'ordine. Una tabella separata,
+\texttt{selected\allowbreak Order\allowbreak Assignments}, registra ordine, proprietario e
+cardinalità ammessa. L'assegnazione avviene sull'intera lista prima di
+costruire i batch e non dipende dalle durate A*, ancora non calcolate.
+
+Quando \texttt{assign\allowbreak Mission} viene richiamata durante l'esecuzione,
+riconosce il proprietario già presente, ne controlla la compatibilità e
+restringe i colori ammessi a quel solo proprietario. Non effettua quindi
+una nuova scelta libera tra risorse a ogni batch.
+
+\subsubsection{Scelta del proprietario nel codice}
+
+Il Listing~\ref{lst:impl-assign-orders} implementa direttamente
+l'intersezione degli insiemi di risorse ammissibili e l'euristica
+\emph{least-loaded}. Il carico usato in questa fase è il numero di missioni
+già assegnate, non il tempo A*.
+
+\begin{lstlisting}[language=Matlab,caption={Assegnazione univoca dell'ordine alla risorsa meno caricata.},label={lst:impl-assign-orders}]
+	load = zeros(1,numberOfResources);
+	
+	for g = 1:max([0;groups])
+	
+	rows = find(groups == g);
+	candidates = 1:numberOfResources;
+	
+	for k = rows'
+	candidates = intersect(candidates,eligible{k});
+	end
+	
+	if isempty(candidates)
+	error('assignOrders:NoCommonResource', ...
+	['Order %s has no resource eligible ' ...
+	'for all its missions.'],ids(rows(1)));
+	end
+	
+	[~,leastLoaded] = min(load(candidates));
+	owner = candidates(leastLoaded);
+	
+	missions.assignedResource(rows) = owner;
+	load(owner) = load(owner) + numel(rows);
+	end
+\end{lstlisting}
+
+\subsection{Cardinalità nominale e integrità dell'ordine}
+
+\texttt{batch\allowbreak Division} imposta la cardinalità nominale a $2R$, dove $R$
+è il numero di risorse. Con otto risorse, il riferimento è dunque di 16
+missioni per batch. Se il limite cade all'interno di un ordine, il batch
+viene esteso fino all'ultima missione di quell'ordine. L'ultimo batch può
+contenere meno missioni del riferimento.
+
+La sequenza dei batch è conservata in un array di celle di tabelle,
+\texttt{divided\allowbreak Missions}. Un ordine numeroso può produrre un batch maggiore
+della dimensione nominale: il vincolo di integrità prevale sulla cardinalità.
+La suddivisione è determinata prima della simulazione e non deriva da un
+confronto tra configurazioni candidate.
+
+\subsubsection{Integrazione nel flusso principale}
+
+L'assegnazione viene completata prima di invocare il batching. Di conseguenza
+ogni tabella contenuta in \texttt{dividedMissions} eredita già il campo
+\texttt{assignedResource}.
+
+\begin{lstlisting}[language=Matlab,caption={Assegnazione degli ordini e successiva divisione in batch.},label={lst:impl-main-assignment-batch}]
+	attitudeTable = defineAttitude( ...
+	numberOfResources,size(costMap));
+	
+	[runMissionList,selectedOrderAssignments] = ...
+	assignOrders( ...
+	missionList,numberOfResources,attitudeTable);
+	
+	deadlineState = initializeDeadlineState(runMissionList);
+	
+	[dividedMissions,~] = batchDivision( ...
+	runMissionList,numberOfResources, ...
+	averageT,maxT,false);
+\end{lstlisting}
+
+\section{Costruzione della rete colorata}
+\label{sec:impl-rete}
+
+\subsection{Matrici di incidenza e indicizzazione}
+
+\texttt{generate\allowbreak Matrices} associa a ogni missione tre transizioni e due
+posti interni. Le matrici di pre-incidenza e post-incidenza hanno le
+transizioni sulle righe e i posti sulle colonne; questa convenzione va
+considerata nell'interpretazione degli indici.
+
+Per la missione in riga $i$, le transizioni sono
+$t_{3i-2}$, $t_{3i-1}$ e $t_{3i}$, corrispondenti all'avvio, alla fase
+con durata e al passaggio finale. Oltre ai posti interni viene creato il
+posto comune $p_1$ delle risorse disponibili. Per un batch con $M$ missioni
+e $H$ collegamenti interni agli ordini, le dimensioni sono
+\begin{equation}
+	N_T=3M,\qquad N_P=1+2M+H.
+	\label{eq:impl-dimensioni-rete}
+\end{equation}
+Un ordine con $q$ missioni ammesse introduce $q-1$ collegamenti; una
+missione senza ordine resta una catena autonoma senza tali collegamenti.
+
+Per collegare due missioni consecutive, la funzione elimina il ritorno
+della precedente a $p_1$ e il prelievo della successiva da $p_1$, sostituendoli
+con un posto di passaggio. Il token della risorsa rimane nella catena fino
+all'ultima missione. La sequenza viene ricostruita per priorità anche se
+le righe ricevute non sono già ordinate.
+
+\subsection{Archi, colori e marcatura}
+
+\texttt{generate\allowbreak Arcs} traduce gli elementi non nulli delle matrici in una
+tabella con origine, destinazione e matrice dei colori ammessi.
+I nomi dei nodi distinguono posti e transizioni; il collegamento tra
+transizione e missione si ricava dal gruppo di tre transizioni cui essa
+appartiene.
+
+Ogni risorsa è rappresentata da un vettore di base di lunghezza $R$,
+con un solo elemento unitario. Dopo l'assegnazione offline, gli archi
+della missione ammettono esclusivamente il colore del proprietario.
+Questo vale anche per gli archi dei posti di passaggio.
+
+La marcatura è una matrice $N_P\times R$. Il programma usa il numero di
+posti effettivamente generato, compresi quelli di collegamento; inizializza
+la prima riga a uno per tutte le risorse e le altre a zero. Non vengono
+aggiunti token di controllo separati per le precedenze. L'invariante
+operativo è un token per colore, distribuito tra i posti della rete:
+\begin{equation}
+	\sum_{p=1}^{N_P}m_{p,r}=1,\qquad r=1,\ldots,R.
+	\label{eq:impl-token}
+\end{equation}
+
+\subsubsection{Generazione di rete, archi e marcatura}
+
+Nel ciclo principale le strutture vengono rigenerate per il batch corrente.
+La dimensione della marcatura è ricavata direttamente da
+\texttt{size(pre\_m,2)}, così da includere anche gli eventuali posti di
+handoff aggiunti dalla rete.
+
+\begin{lstlisting}[language=Matlab,caption={Costruzione della CTPN del batch e marcatura iniziale.},label={lst:impl-build-pn}]
+	[~,colors] = assignMission( ...
+	currentBatch,numberOfResources,attitudeTable);
+	
+	[pre_m,post_m] = generateMatrices(currentBatch);
+	arc = generateArcs(pre_m,post_m,colors);
+	
+	if ~iscell(arc.color_mat)
+	arc.color_mat = mat2cell( ...
+	arc.color_mat, ...
+	ones(1,size(arc,1)), ...
+	numberOfResources);
+	end
+	
+	m = zeros(size(pre_m,2),numberOfResources);
+	m(1,:) = ones(1,numberOfResources);
+\end{lstlisting}
+
+\section{Motore di esecuzione e stato conservato}
+\label{sec:impl-stato}
+
+\subsection{Abilitazione e scatto delle transizioni}
+
+\texttt{colored\allowbreak Petri} mantiene l'elenco dei posti da elaborare, gli archi
+residui e la cronologia degli scatti. Quando un posto alimenta più
+transizioni, \texttt{r\_\allowbreak conflict\_\allowbreak colored} individua quelle compatibili
+con la marcatura e con i colori ammessi. Le disponibilità vengono aggiornate
+anche durante la selezione, evitando di impegnare due volte lo stesso token.
+
+La routine conserva un criterio storico basato sul lavoro accumulato per
+scegliere tra colori disponibili. Nel flusso corrente ogni missione ammette
+un solo proprietario: tale criterio non può modificarlo. Per un'uscita
+singola interviene \texttt{check\_\allowbreak color}, che verifica la disponibilità del
+colore richiesto.
+
+\texttt{next\_\allowbreak transition\_\allowbreak c} determina il tempo associato al token in
+ingresso mediante \texttt{find\_\allowbreak position}. Quest'ultima ricerca nella
+cronologia l'occorrenza più recente del nodo con il colore pertinente;
+quando necessario riconosce la marcatura iniziale con tutte le risorse.
+La transizione centrale della missione richiede la pianificazione del
+percorso e riceve la durata calcolata. Le transizioni di avvio e passaggio
+non aggiungono un ulteriore tempo operativo.
+
+\texttt{next\_\allowbreak place\_\allowbreak c} trasferisce il colore ai posti in uscita e propaga
+il tempo della transizione. Gli archi attraversati vengono rimossi dalla
+tabella residua. La cronologia restituita, \texttt{schedule\_\allowbreak sort}, viene
+ordinata per tempo e filtrata per conservare le transizioni.
+
+L'ordine di elaborazione delle strutture nel programma non va confuso con
+una scansione globale dell'orologio a intervalli fissi. Il motore costruisce
+i tempi delle attività propagandoli lungo i token e produce successivamente
+la cronologia ordinata.
+
+\subsection{Avvio, risultato e posizione della risorsa}
+
+Per una missione con pianificazione riuscita, il tempo del token in ingresso
+alla fase centrale è l'avvio $s_m$. Il completamento è
+\begin{equation}
+	c_m=s_m+\tau_m.
+	\label{eq:impl-completamento}
+\end{equation}
+Durante questa elaborazione vengono già registrati il risultato completato,
+i tempi previsti dal percorso e il nuovo stato della risorsa. Non si attende
+il trascorrere di un tempo reale sul computer e non si conserva una missione
+in esecuzione con un residuo da riprendere alla finestra successiva.
+
+\texttt{update\allowbreak Batch} aggiunge la durata al campo \texttt{Time} della
+risorsa, appende codice, ordine e priorità allo storico e pone la posizione
+sull'ultimo punto del percorso. La tabella \texttt{resource\allowbreak Pos} contiene
+una matrice numerica $R\times2$ nel campo \texttt{position}, inizializzata
+con valori non definiti. Il campo \texttt{resource} contiene i vettori
+unitari che permettono di riconoscere la risorsa dal colore.
+
+I tempi del programma di esecuzione rimangono simulati. Il loro aggiornamento
+immediato durante il calcolo non rappresenta un aggiornamento anticipato
+di un dispositivo fisico, che non fa parte del sistema implementato.
+
+\subsection{Passaggio al batch successivo}
+
+Al termine di un batch, \texttt{main.m} conserva il riepilogo cumulato
+in \texttt{scheduled\allowbreak Mission}, le posizioni e \texttt{deadline\allowbreak State}.
+Le copie dei riepiloghi e delle cronologie sono memorizzate in
+\texttt{batch\allowbreak History} e \texttt{schedule\allowbreak History}. La matrice
+\texttt{batch\allowbreak Time} contiene i tempi cumulati in ore, con una colonna per
+batch; non rappresenta il solo incremento di lavoro dell'ultimo batch.
+
+Nel batch successivo rete, archi e marcatura sono nuovi. Il motore associa
+al token di ciascun proprietario il suo precedente tempo cumulato. Non
+impone a tutte le risorse di ripartire dal massimo dei tempi raggiunti dalle
+altre: il passaggio tra batch non introduce una barriera di sincronizzazione.
+
+Il controllo della soglia resta presente, ma con valore infinito non blocca
+le risorse nel normale scenario. I rami storici che bloccano una risorsa per
+bilanciare il lavoro sono distinti dal ramo usato quando esiste già un
+proprietario assegnato.
+
+\subsubsection{Ciclo di simulazione dei batch}
+
+Il Listing~\ref{lst:impl-main-loop} mostra il punto in cui il motore riceve
+la rete appena costruita e restituisce contemporaneamente cronologia,
+lavoro cumulato, posizioni, missioni rinviate, fallimenti e stato delle
+deadline.
+
+\begin{lstlisting}[language=Matlab,caption={Invocazione del motore e persistenza dello stato fra batch.},label={lst:impl-main-loop}]
+	[schedule_sort,batch,resourcePos, ...
+	notDoneMissions,failedMissionCodes,deadlineState] = ...
+	coloredPetri( ...
+	pre_m,post_m,m,numberOfResources,arc, ...
+	scheduledMission,resourcePos,k, ...
+	planner,occupancyMatrix,currentBatch,threshold, ...
+	deadlineState,deadlineModel,runMissionList);
+	
+	scheduledMission = batch;
+	
+	scheduleHistory{k} = schedule_sort;
+	batchHistory{k}    = batch;
+	batchTime(:,end+1) = batch.Time/3600;
+	
+	if ~isempty(failedMissionCodes)
+	failedRows = currentBatch( ...
+	ismember(currentBatch.missionCode,failedMissionCodes),:);
+	
+	failedPathMissions = ...
+	[failedPathMissions; failedRows];
+	end
+\end{lstlisting}
+
+\section{Mappa e pianificazione dei percorsi}
+\label{sec:impl-percorsi}
+
+\subsection{Costruzione della griglia}
+
+\texttt{compute\allowbreak Map} legge l'immagine degli ostacoli e quella di riferimento.
+Per immagini a colori viene usato il canale verde. I pixel dell'immagine
+degli ostacoli diversi da 255 ricevono costo 100, mentre quelli bianchi
+rimangono a costo zero. Questi valori alimentano la mappa di occupazione
+usata dal pianificatore.
+
+La costruzione di \texttt{binary\allowbreak Occupancy\allowbreak Map} usa esplicitamente dimensioni
+50.2 per 95.1 e risoluzione 10, coerenti con la griglia di riferimento di
+951 righe e 502 colonne. Sostituire l'immagine con una mappa di dimensioni
+diverse richiede quindi di verificare anche questa configurazione.
+Il nome \texttt{cost\allowbreak Map} non indica, nel flusso corrente, un modello di
+costo della congestione o di interferenza tra mezzi.
+
+\subsection{Trasformazione degli estremi}
+
+\texttt{scale\allowbreak Points} trasforma le coordinate operative in indici di
+matrice secondo
+\begin{equation}
+	(X,Y)\longmapsto
+	\bigl(\operatorname{round}(X),
+	\operatorname{round}(N_Y+1-Y)\bigr).
+	\label{eq:impl-coordinate}
+\end{equation}
+Il termine unitario mantiene la validità degli indici MATLAB ai bordi:
+$Y=1$ corrisponde all'ultima colonna e $Y=N_Y$ alla prima.
+Le coordinate sono quindi arrotondate e l'asse Y invertito.
+
+\texttt{path\allowbreak Planning} legge l'occupazione direttamente dalla mappa del
+planner e verifica la coerenza dimensionale con la matrice ricevuta.
+Imposta la connettività della ricerca di raggiungibilità a quattro oppure
+otto vicini in base alla proprietà \texttt{Diagonal\allowbreak Search} del planner.
+Lo script principale non modifica esplicitamente tale proprietà.
+
+\subsection{Continuità e correzione degli estremi}
+
+Ogni chiamata pianifica due tratte: posizione corrente--FROM e FROM--TO.
+Se la risorsa non ha una posizione precedente, viene inizializzata sul
+FROM richiesto. Non si introduce un trasferimento da un deposito comune.
+Dopo il controllo degli indici, una posizione iniziale occupata viene
+sostituita dalla cella libera più vicina.
+
+Un FROM occupato viene cercato nella componente raggiungibile dalla
+posizione iniziale. Un FROM libero ma isolato non viene invece spostato:
+la prima chiamata ad A* può fallire. Se l'avvicinamento riesce, il suo ultimo
+punto diventa il FROM effettivo della seconda tratta, evitando correzioni
+indipendenti che interromperebbero la continuità.
+
+Il TO viene sempre confrontato con la componente raggiungibile dal FROM
+effettivo. Se è libero e appartiene a tale componente rimane invariato;
+altrimenti viene sostituito dalla cella della componente più vicina al TO
+richiesto. La regola usa la distanza euclidea al quadrato e risolve le parità
+per riga e poi per colonna.
+
+Una volta calcolata la seconda tratta, le due sequenze vengono concatenate.
+Il percorso è valido rispetto agli ostacoli statici considerati dal planner;
+non viene confrontato con le occupazioni temporali degli altri mezzi.
+La correzione di un estremo garantisce soltanto una scelta geometrica e non
+la corrispondenza con la postazione logistica originaria.
+
+\subsection{Calcolo della durata simulata}
+
+Indicando con $K_m$ il numero di righe della sequenza concatenata, il tempo
+restituito da \texttt{path\allowbreak Planning} è
+\begin{equation}
+	\tau_m=
+	\operatorname{round}\!\left(\frac{K_m}{5.5}\,1.20\right)+60
+	\quad [\mathrm{s}].
+	\label{eq:impl-durata}
+\end{equation}
+Il conteggio comprende gli estremi delle due tratte e il punto FROM presente
+in entrambe. La formula usa il numero di punti, non la somma delle lunghezze
+degli archi: i movimenti diagonali non ricevono un peso geometrico separato
+nel calcolo temporale.
+
+I coefficienti della durata sono scritti nella funzione di pianificazione.
+La previsione delle deadline riceve invece i propri coefficienti dalla
+struttura di configurazione. Nella versione corrente i valori coincidono,
+ma cambiare la configurazione delle deadline non modifica automaticamente
+la legge temporale del percorso. Questa separazione deve essere considerata
+quando si calibrano i parametri.
+
+\subsubsection{Implementazione del percorso e del tempo}
+
+Il nucleo della funzione \texttt{pathPlanning} rende esplicite le due tratte
+della missione e la successiva conversione del percorso in secondi. Il
+Listing~\ref{lst:impl-path-planning} riporta l'estratto corrispondente.
+
+\begin{lstlisting}[language=Matlab,caption={Pianificazione delle due tratte e calcolo del tempo simulato.},label={lst:impl-path-planning}]
+	path = plan(planner,startPoint,fromPoint);
+	
+	if isempty(path)
+	fprintf(['Discarded mission %d: ' ...
+	'no feasible approach path.\n'], ...
+	mission.missionCode);
+	return
+	end
+	
+	% L'ultimo punto raggiunto diventa il FROM effettivo.
+	fromPoint = path(end,:);
+	
+	secondPath = plan(planner,fromPoint,toPoint);
+	
+	if isempty(secondPath)
+	fprintf(['Discarded mission %d: ' ...
+	'no feasible FROM-to-TO path.\n'], ...
+	mission.missionCode);
+	return
+	end
+	
+	path = [path;secondPath];
+	
+	timePath = size(path,1)/5.5;
+	time = round(timePath + timePath*0.2) + 60;
+	
+	missionTable = table( ...
+	mission.missionCode, ...
+	mission.priority, ...
+	time,{path}, ...
+	'VariableNames', ...
+	{'MissionCode','Priority','Time','Path'});
+\end{lstlisting}
+
+\section{Riutilizzo delle componenti raggiungibili}
+\label{sec:impl-cache}
+
+\texttt{find\allowbreak Nearest\allowbreak Zero} gestisce sia la ricerca della cella libera più
+vicina sia quella vincolata alla componente di un'origine. Nel secondo
+caso conserva dati persistenti: maschera delle celle libere, connettività,
+etichette delle componenti e coordinate dei relativi punti.
+
+Una componente ancora sconosciuta viene esplorata con una visita in ampiezza.
+Le chiamate successive dalla stessa componente riutilizzano il risultato.
+Se il punto richiesto risulta già etichettato come appartenente alla
+componente corretta, viene restituito direttamente. Negli altri casi si
+calcolano le distanze dai punti della componente e si applica il criterio
+deterministico di parità.
+
+La cache viene invalidata quando cambia la maschera delle celle libere o
+la connettività, anche se le dimensioni della matrice restano uguali.
+Riguarda la mappa più recente e non conserva i percorsi A* delle singole
+missioni. Una chiamata verifica comunque la coerenza della maschera; il
+riutilizzo non rende ogni ricerca un'operazione a costo costante.
+
+Il vantaggio consiste nell'evitare visite ripetute della medesima componente.
+Non modifica gli estremi scelti, le precedenze o la durata ottenuta da un
+identico percorso. Una riduzione del tempo di calcolo non va pertanto
+interpretata come una riduzione del lavoro fisico simulato.
+
+\section{Implementazione delle deadline}
+\label{sec:impl-deadline}
+
+\subsection{Stato iniziale di missioni e ordini}
+
+\texttt{initialize\allowbreak Deadline\allowbreak State} riceve la lista ammessa e assegnata.
+Costruisce due tabelle, \texttt{Missions} e \texttt{Orders}, con gli stati
+iniziali in attesa e i valori temporali non ancora definiti.
+Per gli ordini identificati usa una chiave derivata dall'ID; per una missione
+senza ordine usa una chiave basata sull'UID. Le missioni senza ID non vengono
+quindi riunite in un unico ordine.
+
+La tabella delle missioni conserva UID, codice, chiave e nome dell'ordine,
+risorsa, posizione nella sequenza, distanza e durata stimate, deadline,
+avvio, completamento, durata simulata, slack, ritardo positivo e stato.
+Quella degli ordini contiene proprietario, cardinalità ammessa, previsione
+complessiva e indicatori temporali aggregati. L'inizializzazione verifica
+che ogni ordine abbia un unico proprietario.
+
+\subsection{Congelamento al primo avvio riuscito}
+
+La chiamata a \texttt{freeze\allowbreak Order\allowbreak Deadline} avviene nella transizione centrale,
+solo dopo che \texttt{path\allowbreak Planning} ha restituito un percorso valido e prima
+dell'aggiornamento della posizione. La stima riceve quindi la posizione
+precedente della risorsa e il tempo del token all'avvio.
+
+La funzione individua l'ordine tramite l'UID della missione e seleziona dalla
+lista globale tutte le sue missioni ammesse. Se il tempo iniziale dell'ordine
+è già definito, termina senza alterare la previsione. Diversamente richiama
+\texttt{estimate\allowbreak Order\allowbreak Deadlines\allowbreak Euclidean}, registra tutte le scadenze
+cumulative e pone l'ordine nello stato in esecuzione.
+
+Il riferimento viene congelato una sola volta. Non viene traslato in avanti
+per assorbire ritardi successivi. Se le prime missioni falliscono prima di
+un avvio riuscito, la previsione comprende comunque l'intera lista ammessa
+dell'ordine, incluse quelle fallite; se tutte falliscono, avvio e deadline
+restano indefiniti.
+
+\subsubsection{Integrazione dello stato delle deadline}
+
+Nel flusso attivo lo stato viene creato dopo l'assegnazione degli ordini e
+viene poi passato per valore restituito a ogni chiamata del motore. Il
+Listing~\ref{lst:impl-deadline-flow} evidenzia questo collegamento senza
+introdurre un secondo orologio di simulazione.
+
+\begin{lstlisting}[language=Matlab,caption={Persistenza di \texttt{deadlineState} nel flusso principale.},label={lst:impl-deadline-flow}]
+	deadlineState = initializeDeadlineState(runMissionList);
+	
+	% ... costruzione del batch e della rete ...
+	
+	[schedule_sort,batch,resourcePos, ...
+	notDoneMissions,failedMissionCodes,deadlineState] = ...
+	coloredPetri( ...
+	pre_m,post_m,m,numberOfResources,arc, ...
+	scheduledMission,resourcePos,k, ...
+	planner,occupancyMatrix,currentBatch,threshold, ...
+	deadlineState,deadlineModel,runMissionList);
+\end{lstlisting}
+
+\subsection{Previsione geometrica per missione}
+
+La funzione di stima ordina le missioni per priorità e applica la stessa
+trasformazione degli indici di griglia. Non richiama A* né la ricerca della
+cella raggiungibile. Per la missione $i$, con posizione prevista $Q_i$ e
+estremi richiesti $F_i,T_i$, calcola
+\begin{equation}
+	\widehat\ell_i=\lVert Q_i-F_i\rVert_2+
+	\lVert F_i-T_i\rVert_2.
+	\label{eq:impl-distanza-deadline}
+\end{equation}
+Per la prima missione $Q_1$ coincide con la posizione ricevuta; se essa non
+è definita, coincide con $F_1$. Per le successive si usa $Q_i=T_{i-1}$,
+senza applicare le eventuali correzioni che il planner adotterà realmente.
+
+La durata stimata è
+\begin{equation}
+	\widehat\tau_i=
+	\operatorname{round}\!\left(
+	\frac{\widehat\ell_i}{v_c}(1+\alpha)\right)
+	+\tau_f+\delta_m,
+	\label{eq:impl-stima-durata}
+\end{equation}
+con i parametri configurati nello script principale. Il margine
+$\delta_m$ si applica a ogni missione ed è attualmente nullo.
+L'arrotondamento avviene prima della somma, separatamente per missione.
+
+Dato l'avvio $S_o$, le scadenze vengono accumulate secondo
+\begin{equation}
+	d_{o,i}=S_o+\sum_{j=1}^{i}\widehat\tau_j,
+	\qquad
+	d_o=S_o+\sum_{j=1}^{n_o^{\mathrm{amm}}}\widehat\tau_j.
+	\label{eq:impl-deadline-cumulativa}
+\end{equation}
+L'ultima scadenza di missione coincide con quella dell'ordine. Il campo della
+metrica e le funzioni di registrazione hanno finalità osservative: non
+modificano la marcatura o i colori ammessi.
+
+\subsection{Risultati, slack e classificazione}
+
+\texttt{record\allowbreak Mission\allowbreak Deadline\allowbreak Result} identifica la missione tramite UID.
+In caso di completamento memorizza avvio, fine e durata, quindi calcola
+lo slack come deadline meno completamento e il ritardo positivo come
+massimo tra zero e completamento meno deadline. Un esito fallito aggiorna
+lo stato senza introdurre tempi di lavoro fittizi.
+
+L'ordine è completato quando tutte le sue missioni ammesse sono completate;
+la sua fine è il massimo dei tempi di completamento. Quando tutte le
+missioni sono terminate ma almeno una è fallita, risulta incompleto.
+Se è stato avviato e restano missioni non terminate, rimane in esecuzione.
+Queste classificazioni sono riferite alla lista ammessa, perché le esclusioni
+preliminari non sono state inserite nello stato.
+
+Il ritardo viene calcolato sul risultato completato, non aggiornato
+continuamente rispetto a un orologio globale. Un ordine incompleto non
+viene contato tra quelli completati entro la deadline. Non è inoltre
+previsto nel flusso attivo un limite manuale per ordine che sostituisca
+la previsione euclidea.
+
+\subsubsection{Estrazione degli indicatori finali}
+
+La classificazione finale utilizza direttamente la tabella
+\texttt{deadlineState.Orders}. Un ordine viene contato come in ritardo solo
+se risulta completato e presenta \texttt{LateBy} strettamente positivo.
+
+\begin{lstlisting}[language=Matlab,caption={Riepilogo finale degli ordini rispetto alle deadline.},label={lst:impl-deadline-summary}]
+	missionDeadlineSummary = sortrows( ...
+	deadlineState.Missions, ...
+	{'Resource','OrderId','Sequence'});
+	
+	orderDeadlineSummary = sortrows( ...
+	deadlineState.Orders, ...
+	{'Resource','StartTime'});
+	
+	completedOrders = ...
+	orderDeadlineSummary.Status == "completed";
+	
+	lateOrders = ...
+	completedOrders & orderDeadlineSummary.LateBy > 0;
+	
+	onTimeOrders = ...
+	completedOrders & orderDeadlineSummary.LateBy == 0;
+	
+	fprintf(['Ordini completati: %d | ' ...
+	'entro deadline: %d | in ritardo: %d\n'], ...
+	nnz(completedOrders), ...
+	nnz(onTimeOrders), ...
+	nnz(lateOrders));
+\end{lstlisting}
+
+
+\section{Risultati preliminari della simulazione}
+\label{sec:risultati-preliminari-simulazione}
+
+Per verificare il comportamento complessivo dell'architettura implementata è
+stata eseguita una simulazione completa utilizzando la configurazione descritta
+nelle sezioni precedenti, con otto risorse e con il motore
+\texttt{coloredPetri} come nucleo dell'esecuzione. Lo scopo di questa prova non
+è ancora effettuare un confronto sistematico tra differenti politiche di
+scheduling, ma verificare che la catena completa
+\[
+\text{importazione}
+\rightarrow
+\text{assegnazione}
+\rightarrow
+\text{batching}
+\rightarrow
+\text{CTPN}
+\rightarrow
+\text{path planning}
+\rightarrow
+\text{deadline}
+\]
+produca risultati coerenti e osservabili.
+
+\subsection{Indicatori globali}
+
+La simulazione MATLAB è stata completata in $197.807$ s. Tutti i $310$ ordini
+presenti nella prova sono stati portati a completamento. Non sono state
+registrate missioni con percorso non fattibile e, al termine dell'ultimo batch,
+non risultano missioni residue da rinviare a una successiva esecuzione.
+
+I principali indicatori sono riassunti nella
+Tabella~\ref{tab:simulation-global-results}.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Indicatori globali della simulazione di riferimento.}
+	\label{tab:simulation-global-results}
+	\begin{tabular}{lr}
+		\toprule
+		\textbf{Indicatore} & \textbf{Valore} \\
+		\midrule
+		Numero di risorse & 8 \\
+		Ordini completati & 310 \\
+		Tempo di calcolo MATLAB & 197.807 s \\
+		Makespan simulato & 8.53 h \\
+		Missioni con path non fattibile & 0 \\
+		Missioni residue dopo l'ultimo batch & 0 \\
+		Ordini entro deadline & 309 \\
+		Ordini in ritardo & 1 \\
+		Percentuale ordini entro deadline & 99.68\% \\
+		Massimo ritardo osservato & 2 s \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Il valore del makespan deve essere interpretato rispetto alla formulazione
+adottata nel simulatore. Il riferimento di otto ore non costituisce infatti
+una condizione di arresto: le attività già assegnate possono proseguire oltre
+tale valore. Nella prova considerata il massimo carico cumulato è pari a
+$8.5303$ h ed è associato alla risorsa 4.
+
+\subsection{Distribuzione del carico tra le risorse}
+
+La Tabella~\ref{tab:simulation-resource-workload} riporta il tempo di lavoro
+cumulato prodotto dal motore per ciascuna risorsa.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Tempo di lavoro cumulato per risorsa.}
+	\label{tab:simulation-resource-workload}
+	\begin{tabular}{cc}
+		\toprule
+		\textbf{Risorsa} & \textbf{Tempo di lavoro [h]} \\
+		\midrule
+		1 & 7.1392 \\
+		2 & 6.3403 \\
+		3 & 6.9453 \\
+		4 & 8.5303 \\
+		5 & 5.5744 \\
+		6 & 7.2911 \\
+		7 & 7.9036 \\
+		8 & 7.0908 \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Il carico medio è pari a circa $7.10$ h per risorsa. La distribuzione non è
+perfettamente uniforme: la risorsa 4 raggiunge il valore massimo, mentre la
+risorsa 5 presenta il valore minimo, pari a $5.5744$ h. Questo risultato è
+coerente con il fatto che l'assegnazione iniziale bilancia il numero di
+missioni e rispetta i vincoli di compatibilità, ma non risolve un problema di
+ottimizzazione globale dei tempi effettivi ottenuti successivamente mediante
+A*.
+
+La differenza osservata tra i carichi costituisce quindi un indicatore utile
+per le successive estensioni dello scheduler: una futura politica dinamica può
+utilizzare il lavoro già accumulato, insieme alle deadline, per modificare
+l'assegnazione degli ordini residui.
+
+\subsection{Verifica delle deadline}
+
+La stima geometrica delle deadline ha prodotto $309$ ordini completati entro
+il riferimento temporale e un solo ordine in ritardo. La percentuale di ordini
+completati entro deadline è quindi
+\[
+\frac{309}{310}\cdot100 \simeq 99.68\%.
+\]
+
+La Tabella~\ref{tab:simulation-deadline-examples} riporta tre casi
+rappresentativi, scelti per mostrare le tre possibili condizioni dello slack:
+positivo, nullo e negativo.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Esempi di confronto tra completamento effettivo e deadline.}
+	\label{tab:simulation-deadline-examples}
+	\resizebox{\textwidth}{!}{%
+		\begin{tabular}{lrrrrrrrl}
+			\toprule
+			\textbf{OrderId} &
+			\textbf{Ris.} &
+			\textbf{Missioni} &
+			\textbf{Start [s]} &
+			\textbf{$\widehat{D}_o$ [s]} &
+			\textbf{Deadline [s]} &
+			\textbf{Finish [s]} &
+			\textbf{Slack [s]} &
+			\textbf{LateBy [s]} \\
+			\midrule
+			2006259 & 1 & 1 & 0     & 231 & 231   & 208   & 23 & 0 \\
+			2015531 & 7 & 1 & 10525 & 75  & 10600 & 10600 & 0  & 0 \\
+			2017195 & 3 & 7 & 1383  & 552 & 1935  & 1937  & -2 & 2 \\
+			\bottomrule
+	\end{tabular}}
+\end{table}
+
+Il primo caso mostra un ordine completato con margine positivo. Il secondo
+raggiunge esattamente la deadline e viene pertanto classificato come
+completato entro il limite. Il terzo rappresenta l'unico ordine tardivo della
+simulazione: l'ordine \texttt{2017195}, assegnato alla risorsa 3, termina a
+$t=1937$ s rispetto a una deadline pari a $1935$ s. Di conseguenza,
+\[
+Slack=-2~\mathrm{s},
+\qquad
+LateBy=2~\mathrm{s}.
+\]
+Questo caso costituisce una verifica diretta della logica implementata: uno
+slack negativo viene trasformato in un ritardo positivo della stessa entità,
+senza modificare retroattivamente la deadline.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/esempi/resourceLoad}
+	\caption{Distribuzione del carico lavorativo complessivo su tutte le risorse.}
+	\label{fig:resourceload}
+\end{figure}
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/esempi/priorityOrder}
+	\caption{Esempio di scheduling dei singoli ordini: è possibile vedere le missioni ordinate per priorità, dalla più alta a quella più bassa.}
+	\label{fig:priorityorder}
+\end{figure}
+
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/esempi/orderTimeline}
+	\caption{Distribuzione degli ordini per risorsa compreso della visualizzazione delle singole risorse.}
+	\label{fig:ordertimeline}
+\end{figure}
+
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/esempi/orderTimeline2}
+	\caption{Esempio di visualizzazione delle deadline dei singoli ordini compreso di esecuzione e scadenze.}
+	\label{fig:ordertimeline2}
+\end{figure}
+
+
+
+\section{Dati sperimentali}
+
+\subsection{Stima euclidea per il bilanciamento dei batch}
+
+Per bilanciare il carico delle risorse, il controllore utilizza una
+stima della durata delle missioni basata sulla distanza euclidea,
+in sostituzione del calcolo preventivo dei percorsi tramite A*.
+La stima considera lo spostamento dalla posizione prevista della
+risorsa al punto di prelievo e da questo alla destinazione,
+includendo un margine del 20\% sul tempo di percorrenza e
+60 secondi di movimentazione per missione.
+A* rimane utilizzato nella fase di esecuzione per determinare
+il percorso effettivamente percorribile.
+
+Nel confronto effettuato sullo stesso insieme di 1\,113 missioni,
+il tempo di calcolo MATLAB è passato da circa 21,4 minuti,
+con la valutazione preventiva tramite A*, a 3,5 minuti con
+la stima euclidea, con una riduzione di circa l'84\%.
+Il tempo simulato complessivo è passato da 9,36 a 9,23 ore,
+mentre gli ordini in ritardo sono aumentati da 39 a 43.
+
+In questa prova, la stima euclidea ha quindi consentito un
+notevole risparmio computazionale, mantenendo un tempo
+complessivo di esecuzione comparabile, a fronte di un lieve
+aumento degli ordini in ritardo. Pur non considerando
+esplicitamente gli ostacoli, risulta utile per decidere
+quante missioni ammettere in ciascun batch, evitando di
+calcolare i percorsi sia durante l'assegnazione sia durante
+l'esecuzione.

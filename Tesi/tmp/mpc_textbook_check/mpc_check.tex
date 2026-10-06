@@ -27,24 +27,6 @@
 \usepackage{siunitx}
 \usepackage{xcolor}
 \usepackage{csquotes} % AGGIUNGI QUESTO per correggere il warning di babel
-\usepackage[skins]{tcolorbox}
-\definecolor{notaarancio}{HTML}{F77F00}
-
-\newtcolorbox{nota}[1][]{
-	empty,
-	title={\textbf{Note: #1}},
-	attach boxed title to top left,
-	boxed title style={empty, size=minimal, bottom=1.5mm},
-	coltitle=notaarancio,
-	fonttitle=\bfseries\itshape,
-	borderline west={2.5pt}{0pt}{notaarancio!35},
-	colback=white,
-	left=4mm,
-	top=0mm,
-	bottom=0mm,
-	fontupper=\small,
-	parbox=false
-}
 \renewcommand{\listfigurename}{Figure Listing}
 \renewcommand{\lstlistlistingname}{Code Listing}
 
@@ -115,63 +97,12 @@ sorting=nty
 }
 
 
+\setlength{\headheight}{15pt}
 \begin{document}
-
-\begin{titlepage}
-    \centering
-
-    {\scshape\huge UNIVERSITY OF SALERNO \par}
-    \vspace{1cm}
-
-    {\scshape\large Department of Information and Electrical Engineering, and Applied Mathematics \par}
-    \vspace{0.5cm}
-    
-\vfill
-    {\scshape\large Master's Degree in Computer Engineering \par}
-    \vspace{1.0cm}
-    
-    
-    \includegraphics[width=0.5\textwidth]{Misc/logo_standard (1).png}\par
-    \vspace{0.5cm} % Add your university's logo here
-    {\huge\bfseries Industrial Workforce Management: a practical usage of Petri Nets for balanced mission assignment\par}
-    \vspace{1.0cm}
-
-    \vfill
-
-    \begin{flushleft}
-        \large
-        \begin{tabbing}
-        	\hspace{8cm} \= \kill
-        	\textbf{Teacher} \> \textbf{Student} \\
-        	Ch.mo Prof. Francesco Basile \> Gabriele Imparato \\
-        \end{tabbing}
-    \end{flushleft}
-
-    \vfill
-
-    {\large Academic Year 2025/2026\par} % Any additional information like the date
-\end{titlepage}
-
-\tableofcontents
-
-\chapter{Introduction}
-\input{cap1_intro.tex}
-
-
-\chapter{Theoretical foundations and Modeling approaches}
+\setcounter{chapter}{1}
+\chapter{Theoretical foundations and modeling approaches}
 \input{cap2_teoria.tex}
-
-%\chapter{Fase ingegneristica: Discrete Scheduling MPC for Warehouse Resources}
-\chapter{Original contribute to the problem}
+\chapter{Discrete Scheduling MPC for Warehouse Resources}
 \input{cap3_progettazione.tex}
-
-\chapter{Development phase}
-
-\chapter{Conclusione}
-
-
-
-
 \printbibliography
-
 \end{document}

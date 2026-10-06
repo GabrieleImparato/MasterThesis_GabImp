@@ -1,119 +1,1216 @@
+L'obiettivo del presente lavoro è estendere il modello di esecuzione delle
+missioni di movimentazione introducendo l'ordine come unità indivisibile di
+assegnazione e una distribuzione progressiva del lavoro durante la
+simulazione. La configurazione corrente comprende otto risorse operative,
+ciascuna costituita dall'operatore e dal relativo mezzo. Il numero di risorse
+rimane fisso durante la simulazione.
 
-\section{Motivation}
+La soluzione separa il controllore di assegnazione dal modello di esecuzione.
+Gli ordini ammissibili rimangono inizialmente in coda e vengono assegnati
+alle risorse disponibili formando lotti, o batch, con un obiettivo iniziale
+di 20 missioni per risorsa. Ogni ordine viene incluso interamente in un
+lotto e mantiene il proprietario stabilito al momento dell'assegnazione.
+Il controllore aggiorna la dimensione dei lotti futuri in base ai tempi
+osservati e assegna nuovo lavoro quando una risorsa termina il proprio lotto.
 
-The assignment of warehouse missions to resources is formulated as a discrete
-receding-horizon optimization problem. At each decision instant, the current
-workload of the resources is observed and the feasible assignments are
-obtained from the colored Petri net. The MPC evaluates the predicted workload
-for each feasible assignment and applies only the best current decision. The
-procedure is then repeated after the state of the system has been updated.
+L'esecuzione rimane affidata al motore storico della rete di Petri colorata
+temporizzata, indicata come \textit{Colored Timed Petri Net} (CTPN).
+La modifica non altera sottoreti, matrici di incidenza, colori, precedenze o
+regole di scatto. Per ciascun lotto viene costruita una nuova rete; tra lotti
+si conservano posizioni, tempi cumulati, storia delle missioni e stato delle
+deadline. Non viene attivato il diverso motore temporale a marcatura persistente
+presente nel progetto.
 
-This formulation differs from classical linear MPC, in which the manipulated
-variables are usually continuous. In the present application, an assignment
-is binary: a mission is either assigned to a resource or it is not. Therefore,
-the CPN is responsible for the discrete feasibility constraints, while the
-MPC cost function ranks the feasible alternatives.
+Il tempo nominale per missione è pari a 300 secondi e determina, insieme
+alla quota iniziale, un intervallo di controllo di 6000 secondi simulati.
+Tale controllo è una regola adattiva di assegnazione, non un'ottimizzazione
+predittiva delle sequenze. Le deadline restano stimate mediante distanza
+euclidea al primo avvio effettivo dell'ordine e hanno funzione osservativa:
+non modificano percorsi o abilitazione delle transizioni e non vengono
+sostituite dal riferimento nominale di cinque minuti.
 
-\section{Workload Model}
+\section{Ordini, missioni e risorse}
+\label{sec:progetto-modello}
 
-Let $x(k) \in \mathbb{R}^{n_r}$ denote the accumulated workload of the
-$n_r$ resources at decision step $k$. The workload of resource $r$ is the
-estimated time required to complete the missions already assigned to it. The
-assignment vector is denoted by $u(k)$. Its elements are binary variables,
-with
+Siano $\mathcal O=\{o_1,\ldots,o_N\}$ l'insieme degli ordini e
+$\mathcal R=\{1,\ldots,R\}$ quello delle risorse, con $R=8$ nella
+configurazione di riferimento. Ogni ordine $o$ comprende un insieme di
+missioni $\mathcal M_o$, di cardinalità
 \begin{equation}
-	u_i(k) \in \{0,1\}.
+    n_o=|\mathcal M_o|.
+\end{equation}
+Una missione identifica un'attività di movimentazione tra un punto di
+prelievo, denominato FROM, e un punto di destinazione, denominato TO.
+Comprende inoltre un identificativo, una priorità e l'associazione con
+l'ordine di appartenenza.
+
+L'identità della singola occorrenza di missione deve essere distinta dal
+codice commerciale: due righe con lo stesso codice non rappresentano
+necessariamente una sola attività. Analogamente, una missione priva di
+identificativo d'ordine viene trattata come un'unità autonoma, evitando di
+accorpare tra loro tutte le attività prive di tale informazione.
+
+Si distingue l'insieme originario $\mathcal M_o$ dal sottoinsieme
+$\mathcal M_o^{\mathrm{amm}}$ delle missioni ammesse dopo la preparazione
+dei dati. Le missioni escluse sono conservate in una tabella separata, ma
+non vengono incluse nello stato delle deadline del flusso corrente.
+Di conseguenza, un ordine classificato come completato nel riepilogo è
+completo rispetto alle sole missioni ammesse. La verifica del completamento
+dell'ordine originario richiede anche il confronto con le missioni escluse.
+
+\begin{nota}
+Le coordinate finite esterne alla mappa vengono riportate entro i suoi
+limiti. Questa correzione non aggiunge automaticamente un tempo per il
+tragitto esterno omesso. Un'eventuale compensazione deve essere calibrata
+e introdotta esplicitamente; non è una funzionalità attiva della CTPN.
+\end{nota}
+
+\subsection{Vincolo di assegnazione ordine--risorsa}
+
+Tutte le missioni ammesse di un ordine devono essere eseguite dalla stessa
+risorsa. Indicando con $r(o)$ la risorsa proprietaria dell'ordine, si richiede
+\begin{equation}
+    r(m)=r(o),\qquad \forall m\in\mathcal M_o^{\mathrm{amm}}.
+\end{equation}
+Il proprietario viene scelto dal controllore quando l'ordine entra in un
+lotto. L'associazione non cambia nelle fasi successive. Un ordine costituisce pertanto un'unità indivisibile
+ai fini dell'assegnazione, anche se comprende numerose missioni.
+
+Occorre distinguere tale proprietà dalla disponibilità operativa della
+risorsa. Una risorsa può essere proprietaria di più ordini ancora da iniziare,
+ma ne esegue uno alla volta. Quando avvia un ordine, ne mantiene la riserva
+fino al termine della sequenza delle missioni ammesse, senza intercalare
+attività appartenenti ad altri ordini.
+
+\subsection{Priorità e precedenze interne}
+
+A ogni missione $m$ è associata una priorità numerica $p_m$; un valore
+maggiore determina una precedenza più elevata all'interno dello stesso
+ordine. La sequenza ammessa è quindi
+\begin{equation}
+    \pi_o=(m_{o,1},\ldots,m_{o,n_o^{\mathrm{amm}}}),
+    \qquad p_{m_{o,i}}\geq p_{m_{o,i+1}},
+\end{equation}
+dove $n_o^{\mathrm{amm}}=|\mathcal M_o^{\mathrm{amm}}|$. A parità di
+priorità si conserva l'ordine relativo delle attività in ingresso.
+
+La priorità non viene utilizzata per costruire una graduatoria globale
+tra ordini. Gli ordini in attesa vengono esaminati secondo la loro prima comparsa nei
+dati, tenendo conto delle risorse disponibili e delle rispettive quote. Un
+ordine senza una risorsa compatibile attualmente libera rimane in coda,
+senza impedire l'assegnazione di altri ordini. Per ciascuna risorsa si conserva
+la successione degli ordini a essa assegnati. Una priorità mancante viene sostituita con un valore
+convenzionale unitario.
+
+\begin{nota}
+	I dati contenuti nei file Excel forniti dall'azienda ospitante sono stati
+	suddivisi in lotti giornalieri mediante uno script Python, considerando
+	i giorni lavorativi ed escludendo sabati e domeniche. La suddivisione
+	segue un criterio semplificato e mantiene ciascun ordine nella sua
+	interezza, evitando di distribuirne le missioni su giornate diverse.
+\end{nota}
+
+\section{Politica di assegnazione ordini}
+\label{sec:progetto-assegnazione}
+
+
+Sia $\mathcal R_m\subseteq\mathcal R$ l'insieme delle risorse compatibili
+con la missione $m$. La risorsa scelta deve essere compatibile con tutte le
+missioni ammesse dell'ordine; di conseguenza,
+\begin{equation}
+    \mathcal R_o=
+    \bigcap_{m\in\mathcal M_o^{\mathrm{amm}}}\mathcal R_m.
+\end{equation}
+Un ordine con attività ammesse può essere assegnato soltanto se
+$\mathcal R_o\neq\varnothing$. In caso contrario il problema, con i vincoli
+forniti, non ammette un'assegnazione per quell'ordine e la procedura segnala
+l'incompatibilità. Non è prevista una riassegnazione parziale che distribuisca
+le missioni tra operatori diversi.
+
+La compatibilità rappresenta l'idoneità della risorsa rispetto ai vincoli
+della missione. Essa non certifica l'esistenza di un percorso sulla mappa,
+che viene verificata separatamente. Nella configurazione corrente tutte le
+risorse condividono gli stessi limiti geometrici di operatività.
+
+\begin{nota}
+La compatibilità dell'intero ordine viene verificata prima dell'avanzamento
+temporale, ma questa verifica non assegna un proprietario. Il proprietario
+viene scelto soltanto quando l'ordine entra in un lotto operativo.
+\end{nota}
+
+\newpage
+
+\subsection{Coda degli ordini e target di completamento}
+
+Sia $\mathcal{Q}(t)$ la coda degli ordini non ancora assegnati
+all'istante simulato $t$ e sia $\mathcal{R}$ l'insieme delle
+risorse, con $R=|\mathcal{R}|$. Gli ordini sono noti
+all'inizio della simulazione, mentre l'assegnazione avviene
+progressivamente attraverso batch globali.
+
+A ciascun batch viene associato un target $x$ di missioni
+completate. Il target riguarda i completamenti effettivi:
+le missioni fallite non contribuiscono al suo raggiungimento
+e vengono sostituite quando rimane altro lavoro eseguibile.
+
+Per evitare il superamento del target durante l'esecuzione
+concorrente, vengono conteggiate anche le missioni in corso
+e quelle già ammesse nelle code. Indicando con $C_k(t)$
+il numero di missioni completate nel batch $k$ e con
+$A_k(t)$ il numero di missioni ammesse ma non ancora
+terminate, si mantiene il vincolo
+\begin{equation}
+	C_k(t)+A_k(t)\leq x.
+	\label{eq:prenotazione_target_batch}
 \end{equation}
 
-For the current mission, the duration associated with each feasible resource
-is calculated by the A* path-planning module. These durations form the matrix
-$B$. The workload model used by the scheduling MPC is
+\noindent La quantità di lavoro ancora da eseguire è quindi
 \begin{equation}
-	x(k+1) = A x(k) + B u(k),
+	S_k(t)=x-C_k(t)-A_k(t).
 \end{equation}
-where
+Il completamento di una missione trasferisce un'unità
+da $A_k(t)$ a $C_k(t)$, senza liberare un posto.
+Un fallimento riduce invece $A_k(t)$ senza incrementare
+$C_k(t)$, rendendo disponibile un posto per una missione
+sostitutiva. Il numero complessivo di tentativi può
+pertanto superare $x$.
+
+Per ciascun ordine, le risorse compatibili sono quelle
+in grado di eseguirne tutte le missioni. Quando viene
+accodata la prima missione di un ordine non ancora
+assegnato, l'intero ordine riceve un unico proprietario
+$r(o)$ e viene rimosso da $\mathcal{Q}(t)$.
+La proprietà rimane invariata anche quando l'esecuzione
+dell'ordine si estende su più batch.
+
+Per ogni ordine, vengono rispettate le precedenze di priorità
+sia durante la formazione delle code sia durante
+l'esecuzione.
+
+Per ogni risorsa si considerano anzitutto le missioni
+residue degli ordini di sua proprietà. Soltanto quando
+non rimangono missioni proprie da accodare viene
+considerato un nuovo ordine compatibile.
+
+Per la prima assegnazione alla risorsa nel batch,
+si privilegiano gli ordini composti da più missioni,
+preferendo quelli con il maggior numero di missioni
+residue. Nelle assegnazioni successive, quando occorre
+aprire un nuovo ordine, gli ordini composti da una sola
+missione costituiscono la riserva prioritaria.
+Se tale riserva non è disponibile, vengono considerati
+anche gli altri ordini compatibili.
+
+Questa politica consente di avviare presto le sequenze
+più lunghe e di utilizzare gli ordini da una sola missione
+per rifornire le risorse che si liberano, senza trasferire
+ordini già assegnati ad altre risorse.
+
+\subsection{Deadline comune e orizzonte delle code}
+
+Il batch è associato a un budget temporale nominale $H$,
+utilizzato per definire una deadline comune.
+Nella configurazione corrente il budget è calcolato come
 \begin{equation}
-	A = I_{n_r}.
+	H=\frac{x\,\overline{\tau}}{R},
+	\label{eq:budget_temporale_batch}
 \end{equation}
+dove $\overline{\tau}$ è il tempo nominale per missione. Con $x=40$, $\overline{\tau}=180\,\mathrm{s}$ e $R=8$,
+si ottiene $H=900\,\mathrm{s}=15\,\mathrm{min}$. Il budget può comunque essere configurato
+indipendentemente dal target.
 
-The identity matrix expresses the fact that the workload is accumulated: the
-previous workload is retained and the duration of the newly assigned mission
-is added to the corresponding resource.
-
-\section{Prediction Matrices}
-
-For a prediction horizon $N$, the workload predictions are stacked in the
-vector $Y(k)$. The prediction model can be written as
+Indicando con $t_k$ l'istante iniziale del batch,
+la deadline comune è
 \begin{equation}
-	Y(k) = P x(k) + H U(k),
+	D_k=t_k+H
 \end{equation}
-where $U(k)$ contains the future binary assignments and $P$ and $H$ are the
-free-response and forced-response prediction matrices, respectively.
+Essa rappresenta un obiettivo temporale e non un vincolo
+che impedisce nuove partenze. Se necessario,
+l'esecuzione prosegue oltre $D_k$ per raggiungere
+il target di completamenti.
 
-In the implementation, these matrices are generated by
-\texttt{mpcPredictionMatrices.m}. The current implementation uses a horizon
-of three decision steps. At each invocation of the selector, candidate
-assignments are generated only among the resources allowed by the color
-matrix. The first assignment is then applied to the Petri net and the
-prediction is recomputed at the next decision instant.
-
-\section{Normalized Cost Function}
-
-The assignment is selected by minimizing a normalized multi-objective cost.
-Let $T_r^{\mathrm{pred}}$ be the final predicted workload of resource $r$ and
-let $T_{\mathrm{ref}}$ be the reference workload, set to eight hours. The
-three normalized terms are
-\begin{align}
-	J_{\mathrm{max}} & =
-	\frac{\max_r T_r^{\mathrm{pred}}}{T_{\mathrm{ref}}}, \\
-	J_{\mathrm{std}} & =
-	\frac{\operatorname{std}(T^{\mathrm{pred}})}{T_{\mathrm{ref}}}, \\
-	J_{\mathrm{var}} & =
-	\frac{\sum_r \left(T_r^{\mathrm{pred}} - \overline{T}^{\mathrm{pred}}\right)^2}
-	{T_{\mathrm{ref}}^2},
-\end{align}
-where $\overline{T}^{\mathrm{pred}}$ is the mean predicted workload.
-
-The complete objective function is
+Per ridurre la frequenza delle chiamate allo scheduler,
+ogni risorsa riceve una coda breve di missioni.
+Il dimensionamento della coda utilizza due parametri,
+distinti dal budget globale:
 \begin{equation}
-	J = w_1 J_{\mathrm{max}} + w_2 J_{\mathrm{std}} + w_3 J_{\mathrm{var}},
+	q_{\max}=3,
+	\qquad
+	h_q=2\,\overline{\tau}=360\,\mathrm{s},
 \end{equation}
-with the weights
+dove $q_{\max}$ è il numero massimo di missioni
+inseribili nella singola coda e $h_q$ è il relativo
+orizzonte temporale stimato.
+
+Questi limiti si applicano a ogni formazione
+o rifornimento della coda, non al numero totale
+di missioni che una risorsa può eseguire nel batch.
+Una risorsa può quindi ricevere più code successive
+prima della conclusione del batch.
+
+\subsection{Stima euclidea e bilanciamento delle code brevi}
+
+Per una missione $m$, siano $a_m$ il punto di prelievo,
+$b_m$ la destinazione e $\widehat{p}_r$ la posizione
+prevista della risorsa prima dell'esecuzione.
+La durata stimata è attraverso un calcolo di distanza euclidea (definito successivamente per il calcolo delle dealine) che tiene conto della velocità media del muletto aggiungendo delle costanti per tenere conto degli ostacoli.
+
+All'inizio di ogni formazione della coda, la posizione
+prevista coincide con la posizione effettiva corrente
+della risorsa. Dopo ciascun inserimento viene aggiornata
+alla destinazione della missione aggiunta.
+Per una risorsa che non ha ancora eseguito missioni,
+la posizione iniziale coincide con il punto di prelievo
+della prima missione.
+
+Sia $\mathcal{B}_{r,k}^{(j)}$ la coda costruita per
+la risorsa $r$ nel corso del $j$-esimo intervento
+di assegnazione del batch $k$. Il suo carico stimato è
 \begin{equation}
-	w_1 = 0.60, \qquad w_2 = 0.25, \qquad w_3 = 0.15.
+	L_{r,k}^{(j)}
+	=
+	\sum_{m\in\mathcal{B}_{r,k}^{(j)}}
+	\widehat{\tau}_{m,r}.
 \end{equation}
 
-The first term gives priority to the total completion time. The second and
-third terms penalize an uneven distribution of work among the resources. The
-normalization by $T_{\mathrm{ref}}$ makes the terms comparable and avoids a
-single term dominating only because of its numerical scale.
+\noindent La prima missione della coda viene inserita anche
+quando la sua durata stimata supera $h_q$, purché
+sia disponibile un posto nel target.
+Per le missioni successive, l'inserimento richiede
+\begin{equation}
+	\left|\mathcal{B}_{r,k}^{(j)}\right|<q_{\max}
+	\quad\land\quad
+	L_{r,k}^{(j)}+\widehat{\tau}_{m,r}\leq h_q
+	\quad\land\quad
+	S_k(t)>0.
+	\label{eq:inserimento_coda_breve}
+\end{equation}
 
-\section{Receding-Horizon Implementation}
+La stima viene aggiornata seguendo la sequenza
+della coda, includendo gli spostamenti tra la destinazione
+di una missione e il punto di prelievo della successiva.
+Non viene quindi utilizzata la stessa posizione iniziale
+per tutte le missioni.
 
-The implemented scheduling loop follows these steps:
+Per distribuire il lavoro, lo scheduler considera
+sia il tempo effettivo già accumulato dalla risorsa
+nel batch sia il carico previsto della coda
+in costruzione. Indicando con $W_{r,k}(t)$ la somma
+delle durate delle missioni già completate dalla risorsa,
+il criterio di ordinamento utilizza
+\begin{equation}
+	P_{r,k}^{(j)}(t)
+	=
+	W_{r,k}(t)+L_{r,k}^{(j)}.
+\end{equation}
+
+Vengono privilegiate le risorse disponibili con valore
+minore di $P_{r,k}^{(j)}(t)$. In caso di parità,
+si tiene conto del numero di ordini compatibili
+non assegnati, dando precedenza alle risorse
+con meno alternative; gli ulteriori pareggi
+sono risolti mediante l'indice della risorsa.
+Le risorse con missioni proprie residue ricevono
+priorità nel criterio relativo alle alternative.
+
+L'impiego di code brevi evita di prenotare
+immediatamente tutte le missioni del target
+su poche risorse. Il lavoro non ancora accodato
+rimane disponibile per i rifornimenti successivi,
+nel rispetto della proprietà degli ordini.
+
+\subsection{Esecuzione e rifornimento delle risorse}
+
+La rete di Petri esegue le missioni già ammesse,
+rispettando le precedenze. Il completamento di una
+missione non richiama lo scheduler se la risorsa
+dispone ancora di missioni nella propria coda. Ecco le basi:
+\begin{itemize}
+	\item Quando una coda si esaurisce e rimangono posti
+	disponibili nel target, viene attivato il rifornimento
+	delle risorse prive di missioni ammesse in attesa
+	o in esecuzione. Le code ancora attive non vengono
+	ricalcolate;
+	\begin{itemize}
+		\item Anche un fallimento può rendere necessario un intervento
+		di assegnazione, qualora liberi un posto nel target
+		e sia presente una risorsa disponibile.
+		Se la risorsa ha ancora missioni accodate,
+		può proseguire la loro esecuzione senza ricostruire
+		immediatamente la coda;
+	\end{itemize}
+	\item A ogni rifornimento, le nuove stime partono dalla
+	posizione effettiva raggiunta dalla risorsa.
+	Lo scheduler prepara nuovamente una coda breve,
+	applicando i limiti $q_{\max}$ e $h_q$ e il vincolo
+	sui posti ancora disponibili nel target.
+\end{itemize}
+
+\begin{nota}
+	La distanza euclidea viene utilizzata per dimensionare
+	e bilanciare le code, ma non costituisce un controllo
+	di ammissibilità temporale prima dell'avvio
+	di ciascuna missione già accodata.
+	In particolare, il superamento della deadline comune
+	$D_k$ non sospende la coda e non impedisce nuove
+	assegnazioni necessarie al raggiungimento del target.
+\end{nota}
+
+\noindent A* viene utilizzato al momento dell'avvio per
+determinare il percorso e la relativa durata simulata.
+Una missione avviata viene portata a termine.
+Le missioni per cui non viene trovato un percorso
+sono registrate come fallite e non consumano tempo
+simulato; il posto da esse occupato nel target
+diventa nuovamente disponibile.
+
+Il rifornimento mira a evitare attese quando esistono
+missioni assegnabili e posti disponibili nel target.
+Non garantisce tuttavia un'occupazione continua
+di tutte le risorse: compatibilità, proprietà
+degli ordini e missioni già prenotate sulle altre
+risorse possono determinare periodi di inattività.
+
+\subsubsection{Conclusione del batch e ripresa degli ordini}
+
+Il batch termina quando vengono raggiunti $x$
+completamenti oppure quando non rimane lavoro pendente
+e tutti i tentativi ammessi sono terminati.
+Nel secondo caso, il risultato segnala il numero
+di completamenti mancanti rispetto al target.
+
+Indicando con $f_{r,k}$ l'istante in cui la risorsa $r$
+termina l'ultimo tentativo eseguito nel batch,
+l'istante finale è
+\begin{equation}
+	F_k=\max_{r\in\mathcal{R}}f_{r,k},
+\end{equation}
+assumendo $f_{r,k}=t_k$ per le risorse che non eseguono
+missioni nel batch. L'eventuale ritardo rispetto alla deadline comune è
+\begin{equation}
+	\Delta_k=\max(0,F_k-D_k).
+\end{equation}
+Non viene introdotta un'attesa artificiale fino a $D_k$
+se il target è già stato raggiunto.
+Quando rimangono missioni da eseguire, il batch
+successivo inizia a
+\begin{equation}
+	t_{k+1}=F_k.
+\end{equation}
+
+\noindent La marcatura della rete di Petri viene conservata
+tra batch successivi. Un ordine non ancora concluso
+riprende sulla medesima risorsa, mantenendo
+lo stato raggiunto e le precedenze.
+La struttura della rete rimane invariata.
+
+Le deadline dei singoli ordini restano distinte
+dalla deadline comune del batch. Sono determinate
+mediante la stima euclidea al primo avvio effettivo,
+non vengono ricalcolate nei batch successivi
+e non costituiscono un ulteriore vincolo
+di ammissione.
+
+\subsubsection{Valutazione dell'occupazione delle risorse}
+
+Per ogni batch viene registrato il tempo effettivo
+di lavoro di ciascuna risorsa, indicato con $W_{r,k}$.
+Il tempo di inattività è
+\begin{equation}
+	I_{r,k}=(F_k-t_k)-W_{r,k},
+\end{equation}
+mentre l'utilizzo rispetto alla durata effettiva
+del batch è
+\begin{equation}
+	U_{r,k}
+	=
+	\frac{W_{r,k}}{F_k-t_k}.
+\end{equation}
+Per un batch di durata nulla, l'utilizzo viene
+convenzionalmente posto pari a zero. Viene inoltre misurato il lavoro svolto entro
+lo slot nominale $[t_k,D_k]$:
+\begin{equation}
+	W_{r,k}^{\mathrm{slot}}
+	=
+	\sum_{m\in\mathcal{C}_{r,k}}
+	\max\left\{
+	0,\,
+	\min(f_m,D_k)-\max(s_m,t_k)
+	\right\},
+\end{equation}
+\noindent dove $\mathcal{C}_{r,k}$ è l'insieme delle missioni
+completate dalla risorsa nel batch e $s_m$, $f_m$
+sono i rispettivi istanti di avvio e completamento.
+L'utilizzo dello slot è quindi
+\begin{equation}
+	U_{r,k}^{\mathrm{slot}}
+	=
+	\frac{W_{r,k}^{\mathrm{slot}}}{H}.
+\end{equation}
+
+\noindent Queste misure consentono di distinguere il raggiungimento
+del target, il rispetto della deadline comune
+e l'effettiva occupazione delle risorse.
+Viene registrato anche il numero di chiamate
+allo scheduler, così da valutare l'effetto delle
+code brevi sulla frequenza delle riassegnazioni.
+
+\section{Esecuzioni di prova}
+\label{sec:esecuzioni-prova}
+
+Sono state eseguite tre prove impostando il target di completamento
+a 20, 40 e 60 missioni per batch. Il confronto considera la durata
+complessiva simulata, detta \textit{makespan}, il tempo di calcolo
+impiegato da MATLAB, la puntualità degli ordini e il tempo lavorato
+dalle singole risorse.
+
+In tutte le prove sono stati completati 380 ordini, senza missioni
+con percorso non fattibile né missioni rimaste ineseguite al termine.
+Le deadline euclidee sono state fissate al primo avvio effettivo
+di ciascun ordine e mantenute invariate durante l'esecuzione.
+
+Nelle tabelle, il tempo lavorato rappresenta la somma delle durate
+delle missioni eseguite da ciascuna risorsa nell'intera simulazione,
+escludendo gli intervalli di inattività. I valori sono espressi
+in ore decimali e vanno distinti sia dal makespan sia dal tempo
+di calcolo di MATLAB.
+
+
+\subsubsection{Prova con 20 missioni per batch}
+
+La configurazione con 20 missioni per batch presenta diversi
+intervalli di inattività delle risorse, visibili nella
+Figura~\ref{fig:20missioni}. Il makespan è pari a $10{,}09$ ore,
+mentre il tempo di calcolo di MATLAB è di $192{,}127$ secondi.
+Dei 380 ordini completati, 341 rispettano la deadline e 39
+risultano in ritardo.
+
+I tempi lavorati, riportati nella
+Tabella~\ref{tab:tempi-risorse-20}, sono relativamente omogenei
+e variano da circa $7{,}62$ a $8{,}24$ ore. Un carico complessivo
+simile tra le risorse non esclude, tuttavia, la presenza di
+intervalli di attesa durante l'esecuzione.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=\linewidth]{imgs/esempi/20missioni}
+	\caption{Esecuzione temporale con un target di 20 missioni per batch.}
+	\label{fig:20missioni}
+\end{figure}
+
+\begin{table}[H]
+	\centering
+	\begin{tabular}{cr}
+		\hline
+		Risorsa & Tempo lavorato [h] \\
+		\hline
+		1 & $8{,}0386$ \\
+		2 & $7{,}7450$ \\
+		3 & $7{,}7578$ \\
+		4 & $8{,}2378$ \\
+		5 & $7{,}6153$ \\
+		6 & $7{,}8986$ \\
+		7 & $7{,}7058$ \\
+		8 & $7{,}9544$ \\
+		\hline
+	\end{tabular}
+	\caption{Tempo lavorato da ciascuna risorsa nella prova
+	con 20 missioni per batch.}
+	\label{tab:tempi-risorse-20}
+\end{table}
+
+
+\subsubsection{Prova con 40 missioni per batch}
+
+Con un target di 40 missioni per batch, il makespan scende
+a $9{,}08$ ore, con una riduzione di circa un'ora rispetto
+alla prova precedente. Il tempo di calcolo di MATLAB è
+di $160{,}314$ secondi, circa 32 secondi in meno.
+
+Migliora anche la puntualità degli ordini: quelli completati
+entro la deadline aumentano da 341 a 372, mentre quelli
+in ritardo si riducono da 39 a 8.
+
+La Figura~\ref{fig:40missioni} mostra l'andamento temporale
+della prova. I tempi lavorati, riportati nella
+Tabella~\ref{tab:tempi-risorse-40}, rimangono compresi tra
+circa $7{,}62$ e $8{,}16$ ore. La riduzione del makespan,
+a fronte di un carico complessivo simile, si accompagna
+a una diminuzione del tempo totale di inattività delle risorse.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=\linewidth]{imgs/esempi/40missioni}
+	\caption{Esecuzione temporale con un target di 40 missioni per batch.}
+	\label{fig:40missioni}
+\end{figure}
+
+\begin{table}[H]
+	\centering
+	\begin{tabular}{cr}
+		\hline
+		Risorsa & Tempo lavorato [h] \\
+		\hline
+		1 & $7{,}6222$ \\
+		2 & $7{,}7708$ \\
+		3 & $8{,}0794$ \\
+		4 & $7{,}7894$ \\
+		5 & $8{,}1622$ \\
+		6 & $8{,}0792$ \\
+		7 & $7{,}7142$ \\
+		8 & $7{,}6956$ \\
+		\hline
+	\end{tabular}
+	\caption{Tempo lavorato da ciascuna risorsa nella prova
+	con 40 missioni per batch.}
+	\label{tab:tempi-risorse-40}
+\end{table}
+
+
+\subsubsection{Prova con 60 missioni per batch}
+
+Con 60 missioni per batch, il makespan si riduce ulteriormente
+a $8{,}72$ ore, circa 22 minuti in meno rispetto alla configurazione
+con 40 missioni. Il tempo di calcolo di MATLAB è di
+$166{,}380$ secondi, leggermente superiore a quello della prova
+precedente. La puntualità rimane invariata: 372 ordini sono
+completati entro la deadline e 8 risultano in ritardo.
+
+La Figura~\ref{fig:60missioni} mostra l'esecuzione temporale,
+mentre la Tabella~\ref{tab:tempi-risorse-60} riporta i tempi
+lavorati. Questi risultano più uniformi rispetto alle altre
+due prove, con valori compresi tra circa $7{,}68$ e $8{,}03$ ore.
+Le risorse 1 e 7 superano le otto ore di lavoro rispettivamente
+di circa un minuto e mezzo e di meno di un minuto.
+
+Tra le configurazioni esaminate, quella con 60 missioni
+per batch presenta il makespan più basso e la minore differenza
+tra il massimo e il minimo tempo lavorato dalle risorse.
+Il risultato riguarda le prove riportate e non dimostra
+l'ottimalità generale della dimensione scelta per il batch.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=\linewidth]{imgs/esempi/60missioni}
+	\caption{Esecuzione temporale con un target di 60 missioni per batch.}
+	\label{fig:60missioni}
+\end{figure}
+
+\begin{table}[H]
+	\centering
+	\begin{tabular}{cr}
+		\hline
+		Risorsa & Tempo lavorato [h] \\
+		\hline
+		1 & $8{,}0258$ \\
+		2 & $7{,}7711$ \\
+		3 & $7{,}7564$ \\
+		4 & $7{,}9269$ \\
+		5 & $7{,}6819$ \\
+		6 & $7{,}7431$ \\
+		7 & $8{,}0128$ \\
+		8 & $7{,}9667$ \\
+		\hline
+	\end{tabular}
+	\caption{Tempo lavorato da ciascuna risorsa nella prova
+	con 60 missioni per batch.}
+	\label{tab:tempi-risorse-60}
+\end{table}
+
+\newpage
+\section{Modello spaziale e ammissibilità dei percorsi}
+\label{sec:progetto-spazio}
+
+\subsection{Mappa e normalizzazione delle posizioni}
+
+Nella preparazione dei dati, ogni coordinata maggiore di 999 viene prima
+divisa per 1000 e arrotondata, secondo la convenzione adottata per correggere
+l'importazione dei separatori decimali. Questa regola va verificata sui dati
+di ingresso, poiché non distingue un errore di scala da una coordinata
+effettivamente molto distante.
+
+L'ambiente è rappresentato da una griglia di occupazione con celle libere e
+celle ostacolo. Per il dominio rettangolare delle coordinate operative
+\begin{equation}
+    \Omega=[1,N_X]\times[1,N_Y],
+\end{equation}
+un punto finito $q=(X,Y)$ esterno al dominio viene riportato al punto più
+vicino entro i limiti mediante la proiezione
+\begin{equation}
+    \Pi_\Omega(q)=
+    \left(\min\{N_X,\max\{1,X\}\},
+          \min\{N_Y,\max\{1,Y\}\}\right).
+\end{equation}
+Questa scelta consente di trattare coordinate esterne senza eliminare
+immediatamente la missione. La proiezione garantisce soltanto l'appartenenza
+al dominio: il punto ottenuto può ancora essere occupato o scollegato dalla
+zona percorribile. Una coordinata non finita non identifica invece un punto
+proiettabile e comporta l'esclusione preliminare della missione.
+
+Le coordinate operative vengono trasformate in indici della griglia attraverso
+una convenzione coerente con il verso degli assi e con i bordi del dominio.
+Nella convenzione adottata X identifica la direzione delle righe e Y quella
+delle colonne con verso invertito. L'appartenenza al dominio deve essere
+preservata anche dalla trasformazione: un punto sul bordo non deve produrre
+un indice esterno alla matrice.
+
+\subsection{Celle libere e componenti raggiungibili}
+
+Si consideri il grafo $G=(V,E)$ associato alla griglia, dove $V$ comprende le
+celle libere ed $E$ collega le celle adiacenti secondo la modalità di movimento
+ammessa. Il vicinato può comprendere quattro oppure otto direzioni e deve
+essere lo stesso nella ricerca delle celle raggiungibili e nella pianificazione.
+
+Per una cella libera $s$, si indica con $\mathcal C(s)$ la componente connessa
+che la contiene. Quando si deve sostituire un punto richiesto $q$ con una
+cella raggiungibile da $s$, si adotta la regola
+\begin{equation}
+    q^*=\mathop{\arg\min}_{v\in\mathcal C(s)}\|v-q\|_2^2.
+    \label{eq:progetto-cella-raggiungibile}
+\end{equation}
+A parità di distanza si applica un criterio deterministico per riga e
+successivamente per colonna. La distanza è misurata dal punto richiesto;
+non coincide con la lunghezza del percorso dalla risorsa.
+
+La distinzione tra cella libera e cella raggiungibile è essenziale. Una
+destinazione può essere libera ma appartenere a una regione isolata. Per
+questo motivo il TO viene sempre valutato rispetto alla componente del FROM
+effettivo: se vi appartiene rimane invariato, altrimenti viene ridefinito
+secondo l'Equazione~\ref{eq:progetto-cella-raggiungibile}.
+
+La ridefinizione è una regola geometrica del modello. Essa non garantisce
+che la cella sostitutiva rappresenti la medesima postazione logistica reale;
+la coerenza delle posizioni con il magazzino fisico rimane un requisito di
+validazione dei dati.
+
+\subsection{Continuità della risorsa e pianificazione delle tratte}
+
+Per ogni missione si pianificano due tratte: dalla posizione corrente della
+risorsa al FROM e dal FROM al TO. La seconda tratta parte dal punto
+effettivamente raggiunto con la prima, così da mantenere la continuità del
+movimento. Dopo il completamento, il TO effettivo diventa la posizione
+iniziale della risorsa per la missione successiva.
+
+Una risorsa che non ha ancora lavorato viene inizialmente collocata presso
+il FROM della sua prima missione; non viene modellato un trasferimento da un
+deposito comune. Se tale posizione è occupata, si individua la cella libera
+più vicina. Un FROM occupato viene corretto nella componente raggiungibile
+dalla posizione della risorsa. Un FROM già libero ma isolato non viene invece
+spostato automaticamente e può determinare un fallimento della tratta di
+avvicinamento.
+
+I percorsi vengono ricercati mediante A* sulla mappa statica. Non viene
+modellata l'occupazione spazio-temporale dovuta agli altri mezzi; la
+concorrenza temporale tra risorse non implica pertanto una verifica delle
+collisioni tra i loro percorsi.
+
+\subsection{Durata della missione}
+
+La durata simulata è calcolata dal percorso A* che concatena la tratta di
+avvicinamento e quella FROM--TO. Indicando con $K_m$ il numero di punti
+della sequenza concatenata, il modello usa
+\begin{equation}
+    \tau_m=\operatorname{round}\!\left(\frac{K_m}{5.5}(1+0.20)\right)+60
+    \quad [\mathrm{s}].
+\end{equation}
+Il conteggio include i punti restituiti dalle due tratte, compreso il FROM
+presente in entrambe. Non coincide con la somma delle lunghezze euclidee
+degli archi: anche un passo diagonale contribuisce tramite il numero di
+punti. Il termine fisso rappresenta le operazioni accessorie.
+
+La durata non comprende l'attesa precedente all'avvio e non viene limitata
+al riferimento nominale di 300 secondi. È una stima del modello, distinta
+sia dalla previsione usata per le deadline sia da una misura fisica.
+
+\section{Modello CTPN e riserva della risorsa}
+\label{sec:progetto-ctpn}
+
+La Figura~\ref{fig:pn2vecchiamissioni} richiama lo schema precedente,
+organizzato intorno alle alternative di risorsa per una singola missione.
+Nella soluzione adottata l'associazione viene invece determinata a livello
+di ordine dal controllore, al momento dell'ammissione del lotto. La rete
+non seleziona un nuovo proprietario
+per ogni missione, ma utilizza il colore della risorsa già assegnata.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN2_VECCHIA_MISSIONI}
+    \caption{Schema di riferimento della modellazione precedente delle alternative di risorsa per una singola missione.}
+    \label{fig:pn2vecchiamissioni}
+\end{figure}
+
+Ciascuna missione mantiene una sottorete con tre transizioni e due posti
+interni. Le tre fasi rappresentano l'avvio, il completamento temporizzato
+e il passaggio alla missione seguente oppure il rilascio della risorsa.
+Le sottoreti dello stesso ordine vengono collegate in sequenza secondo
+le priorità interne.
+
+\subsection{Precedenze e token colorati}
+
+Tra due missioni consecutive viene inserito un posto di collegamento che
+riceve il token dalla transizione finale della precedente e lo rende
+disponibile alla transizione iniziale della successiva. Il token conserva
+il colore della risorsa assegnata. Il posto di collegamento rappresenta
+quindi sia la precedenza sia il mantenimento della riserva operativa.
+
+La Figura~\ref{fig:pn1nuovamissioni} mostra una sequenza di tre missioni;
+i posti $P7$ e $P8$ collegano le rispettive sottoreti. Lo schema evidenzia
+le precedenze e va letto insieme al vincolo sul colore della risorsa.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN1_NUOVA_MISSIONI}
+    \caption{Collegamento tra tre missioni dello stesso ordine mediante posti di precedenza. Il token della risorsa viene trasferito lungo la sequenza senza essere restituito al posto comune tra missioni intermedie.}
+    \label{fig:pn1nuovamissioni}
+\end{figure}
+
+Solo la prima missione dell'ordine preleva il token dal posto comune delle
+risorse disponibili; solo l'ultima missione ammessa lo restituisce.
+All'interno dell'ordine, la disponibilità necessaria all'avvio è rappresentata
+dal token nel posto di collegamento: non occorre prelevare nuovamente una
+risorsa libera dal posto comune.
+
+Indicando con $\mu_r(p)$ il numero di token del colore $r$ nel posto $p$,
+il modello preserva l'invariante
+\begin{equation}
+    \sum_{p\in\mathcal P}\mu_r(p)=1,
+    \qquad\forall r\in\mathcal R,
+\end{equation}
+dove $\mathcal P$ è l'insieme dei posti della rete operativa.
+La marcatura determina quali transizioni possono scattare, mentre
+l'associazione ordine--risorsa limita il colore con cui possono essere
+eseguite.
+
+\begin{nota}
+	Per semplicità di rappresentazione, le reti di Petri mostrate nelle figure non sono CPN, bensì PN. Questo perché ciascuna figura rappresenta un singolo ramo della rete, percorso da token appartenenti a un unico colore, consentendo così una rappresentazione grafica semplificata.
+\end{nota}
+
+\subsection{Esclusione, fallimento e prosecuzione dell'ordine}
+
+Una missione esclusa nella preparazione non genera una sottorete operativa.
+Se invece una missione ammessa non dispone di un percorso valido, viene
+registrata come fallita e il token viene trasferito oltre il relativo ramo,
+consentendo di esaminare la missione successiva dello stesso ordine.
+In questo caso non si aggiorna la posizione della risorsa e non si attribuisce
+il tempo di un'esecuzione che non è avvenuta.
+
+La riserva permane fino al termine della sequenza ammessa, anche quando
+alcune missioni falliscono. Il rilascio finale della risorsa non implica
+che l'ordine sia completato con successo: un ordine con missioni fallite
+viene classificato come incompleto quando tutte le missioni ammesse sono
+terminate. Le esclusioni preliminari, invece, non entrano nel riepilogo
+delle deadline corrente e richiedono una verifica separata rispetto
+all'ordine originario.
+
+\section{Continuità dello stato tra batch}
+\label{sec:progetto-tempo}
+
+\subsection{Stato conservato e ricostruzione della rete}
+
+Il controllore esterno costruisce per ogni lotto matrici di incidenza,
+archi e marcatura iniziale secondo le regole già presenti nel modello.
+La marcatura comprende un token per risorsa nel posto comune; gli archi del
+lotto ammettono soltanto il colore della risorsa cui è stato assegnato.
+La marcatura non viene trasferita come rete persistente al lotto successivo.
+Sono invece conservati i tempi cumulati, le posizioni finali, la storia delle
+missioni e lo stato delle deadline. Il controllore mantiene inoltre la coda
+degli ordini, le quote e gli istanti di disponibilità delle risorse.
+
+Il motore associa tempi agli scatti delle transizioni e produce una
+cronologia ordinata temporalmente. Per una missione pianificata con successo,
+avviata al tempo $s_m$, il completamento è
+\begin{equation}
+    c_m=s_m+\tau_m.
+\end{equation}
+All'ammissione, il motore storico calcola il programma dell'intero lotto
+e registra gli esiti con i relativi tempi simulati. Non mantiene
+un'esecuzione sospesa da riprendere al controllo successivo. Il controllore
+considera però occupata la risorsa fino all'istante simulato di fine del
+lotto: averne calcolato il risultato non equivale ad averlo già osservato.
+Per l'adattamento sono utilizzati soltanto i completamenti con $c_m\leq t$
+e il tempo già trascorso delle missioni in esecuzione.
+
+\subsection{Orologio del controllore e disponibilità delle risorse}
+
+Sia $a_r$ l'istante di fine del lotto corrente della risorsa $r$ e sia
+$\mathcal B(t)$ l'insieme delle risorse ancora occupate. Dopo le assegnazioni
+possibili all'istante $t$, il controllore avanza al prossimo evento:
+\begin{equation}
+    t_{\mathrm{next}}=
+    \min\!\left\{t_{\mathrm{controllo}},
+                 \min_{r\in\mathcal B(t)}a_r\right\},
+\end{equation}
+dove $t_{\mathrm{controllo}}$ è il successivo controllo periodico. Un lotto
+composto soltanto da percorsi falliti può terminare senza avanzare il tempo;
+in tal caso la risorsa può ricevere immediatamente altro lavoro.
+
+Le invocazioni del motore avvengono in successione nel programma, ma le
+attività di risorse diverse possono sovrapporsi nel tempo simulato. Non è
+imposta una barriera comune alla conclusione dei lotti. Ogni nuova ammissione
+rispetta sia il tempo del controllore sia la fine del lotto precedente della
+stessa risorsa, conservandone la posizione finale per il percorso successivo.
+
+La soglia di blocco resta impostata a infinito. Il riferimento di otto ore
+non tronca l'esecuzione e non costituisce una deadline comune. Sono attivi
+controlli ogni 6000 secondi nella configurazione di riferimento, ma non
+riassegnazioni di ordini già ammessi né interruzioni delle missioni in corso.
+
+\subsection{Missioni fallite e verifica dei lotti}
+
+Un fallimento del percorso viene registrato senza incrementare il tempo
+di lavoro né aggiornare la posizione; il token prosegue verso la missione
+successiva o il rilascio finale secondo le regole della rete esistente.
+Un ordine con missioni fallite conserva quindi un esito incompleto, anche
+quando la risorsa torna disponibile per un altro lotto.
+
+Al termine di ogni chiamata, il controllore verifica che nel lotto non
+rimangano missioni pendenti. Un risultato non vuoto dell'elenco delle missioni non eseguite viene
+segnalato come anomalia, invece di reinserire automaticamente tali missioni
+in un lotto successivo. Gli ordini ancora nella coda, invece, sono attività
+non ancora assegnate e non rappresentano un fallimento del motore.
+
+Le storie di assegnazione e lo stato delle deadline utilizzano gli
+identificativi univoci delle occorrenze di missione. Al termine, i riepiloghi
+delle missioni fallite o ancora pendenti derivano dallo stato delle deadline;
+le esclusioni preliminari restano conservate separatamente.
+
+\section{Stima euclidea delle deadline}
+\label{sec:stima-deadline-manhattan}
+
+La versione corrente mantiene la stima delle deadline dalla geometria delle
+missioni. Un eventuale budget basato sul tempo nominale avrebbe la forma
+\begin{equation}
+    D_o^{\mathrm{nom}}=n_o^{\mathrm{amm}}\,\overline{\tau},
+    \qquad \overline{\tau}=300\,\mathrm{s},
+    \label{eq:order_duration_limit}
+\end{equation}
+ma non è il criterio attivo per le scadenze. Il tempo nominale dimensiona
+l'intervallo del controllore e interviene nella valutazione prudenziale
+delle missioni ancora in esecuzione. Non sostituisce le durate effettive
+né introduce un limite specifico per ordine alternativo alla stima euclidea.
+
+La deadline viene fissata al primo avvio di una missione dell'ordine per cui
+la pianificazione ha avuto successo. Non decorre dall'assegnazione al lotto:
+il tempo impiegato dalla risorsa negli ordini precedenti non consuma il
+budget del nuovo ordine. Le scadenze sono indicatori osservativi e non
+impediscono l'avvio né interrompono missioni in ritardo.
+
+\subsection{Sequenza e distanza stimata}
+
+Sia $\pi_o=(m_{o,1},\ldots,m_{o,n_o^{\mathrm{amm}}})$ la sequenza delle
+missioni ammesse dell'ordine, ordinata per priorità decrescente e, a parità,
+per ordine di ingresso. La previsione comprende tutte queste missioni,
+anche se una precedente missione della sequenza è già fallita prima del
+primo avvio riuscito. Le missioni escluse in preparazione non sono incluse.
+
+Gli estremi $F_i$ e $T_i$ sono espressi negli indici della griglia dopo
+normalizzazione e arrotondamento. La stima non esegue A* e non applica le
+correzioni degli estremi occupati o non raggiungibili adottate dal planner.
+Usa la distanza euclidea
+\begin{equation}
+    d_E(p,q)=\sqrt{(x_p-x_q)^2+(y_p-y_q)^2}.
+    \label{eq:manhattan-distance}
+\end{equation}
+Indicando con $P_r$ la posizione corrente della risorsa prima del primo
+avvio riuscito, si pone $Q_1=P_r$ e $Q_i=T_{i-1}$ per $i>1$. Quando la
+risorsa non ha una posizione precedente, si assume $Q_1=F_1$. Per ogni
+missione la distanza prevista è
+\begin{equation}
+    \widehat\ell_{o,i}=d_E(Q_i,F_i)+d_E(F_i,T_i),
+    \qquad
+    \widehat L_o=\sum_{i=1}^{n_o^{\mathrm{amm}}}\widehat\ell_{o,i}.
+    \label{eq:estimated-order-distance}
+\end{equation}
+Sono così considerati l'avvicinamento iniziale, le movimentazioni FROM--TO
+e i trasferimenti tra missioni consecutive. Non si aggregano prelievi o
+consegne anche quando più missioni condividono la destinazione.
+
+\subsection{Scadenze cumulative}
+
+Con $v_c=5.5$ celle al secondo, maggiorazione $\alpha=0.20$, contributo
+accessorio $\tau_f=60\,\mathrm{s}$ e margine per missione $\delta_m$, si ha
+\begin{equation}
+    \widehat\tau_{o,i}=
+    \operatorname{round}\!\left(
+       \frac{\widehat\ell_{o,i}}{v_c}(1+\alpha)\right)
+       +\tau_f+\delta_m,
+    \qquad \delta_m=0\,\mathrm{s}.
+\end{equation}
+L'arrotondamento viene applicato separatamente a ciascuna missione, prima
+della somma. La durata stimata dell'ordine è
+\begin{equation}
+    \widehat D_o=\sum_{i=1}^{n_o^{\mathrm{amm}}}\widehat\tau_{o,i}.
+    \label{eq:estimated-order-duration}
+\end{equation}
+Il margine configurabile si applica a ogni missione: non è un termine unico
+per ordine e non dipende automaticamente dal numero di coordinate rimappate.
+
+Sia $S_o$ il primo avvio riuscito dell'ordine. Le deadline delle missioni
+sono cumulative e la deadline dell'ordine coincide con l'ultima:
+\begin{equation}
+    d_{o,i}=S_o+\sum_{j=1}^{i}\widehat\tau_{o,j},
+    \qquad d_o=S_o+\widehat D_o.
+    \label{eq:estimated-order-deadline}
+\end{equation}
+Tutte le previsioni dell'ordine vengono congelate insieme. Le missioni
+successive e il passaggio tra batch non le ricalcolano. Se nessuna missione
+dell'ordine viene pianificata con successo, avvio e deadline restano
+indefiniti; un ordine con sole missioni fallite risulta incompleto.
+
+\subsection{Slack e ritardo}
+
+Per una missione completata all'istante $c_{o,i}$ si definiscono
+\begin{equation}
+    \sigma_{o,i}=d_{o,i}-c_{o,i},\qquad
+    T_{o,i}=\max\{0,c_{o,i}-d_{o,i}\}.
+\end{equation}
+Per un ordine le cui missioni ammesse sono tutte completate, con istante
+finale $C_o$, valgono analogamente
+\begin{equation}
+    \sigma_o=d_o-C_o,\qquad T_o=\max\{0,C_o-d_o\}.
+\end{equation}
+Uno slack positivo indica anticipo; uno negativo indica ritardo.
+Il ritardo positivo, o \textit{tardiness}, è distinto dalla
+\textit{lateness} con segno $C_o-d_o$. Una missione può superare la propria
+scadenza cumulativa senza che l'ordine termini necessariamente in ritardo,
+se le attività successive recuperano il tempo. Lo stato corrente calcola
+questi indicatori sui completamenti; non aggiorna un ritardo corrente degli
+ordini aperti mediante un orologio a finestre.
+
+\subsection{Separazione dal path planning e limiti della previsione}
+
+La stima euclidea non modifica il planner A*, la possibilità di movimenti
+diagonali, la marcatura o l'assegnazione. La durata simulata dipende dal
+numero di punti del percorso pianificato, mentre la previsione usa distanze
+euclidee tra gli estremi richiesti. Pur condividendo i coefficienti temporali,
+le due procedure non misurano la stessa quantità geometrica.
+
+Ostacoli, deviazioni, correzioni degli estremi, conteggio dei punti e
+arrotondamenti possono produrre scostamenti. La durata prevista non va
+interpretata come una garanzia né come un limite inferiore o superiore
+universale della durata simulata. La correzione delle coordinate esterne
+alla mappa non ricostruisce il tempo di percorrenza fuori dal dominio.
+
+
+
+\section{Flusso di esecuzione della soluzione}
+
+La procedura attiva si articola nelle seguenti fasi:
 \begin{enumerate}
-	\item The CPN identifies the transitions that can be fired and the
-	resources compatible with the current mission.
-	\item A* calculates the predicted mission duration for every compatible
-	resource.
-	\item The matrices $P$ and $H$ predict the resulting workload for each
-	candidate assignment.
-	\item The normalized cost $J$ is evaluated for every candidate.
-	\item The candidate with minimum cost is selected and converted into the
-	color vector required by the CPN.
-	\item The CPN executes the selected transition and updates the marking,
-	resource position, and accumulated workload.
+    \item Importare le missioni, conservarne l'identità, correggere la scala
+    delle coordinate e riportare quelle finite entro il dominio;
+    \item Separare le missioni non ammissibili, raggruppare quelle ammesse
+    per ordine e priorità interna e verificare la compatibilità di ogni ordine;
+    \item Inizializzare la coda degli ordini senza proprietario, lo stato
+    delle deadline ancora indefinite, le quote e l'orologio del controllore;
+    \item Formare lotti per le risorse disponibili, assegnando ordini interi
+    fino al raggiungimento o superamento delle rispettive quote;
+    \item Costruire la CTPN di ciascun lotto e richiamare il motore storico,
+    conservando posizioni e tempi cumulati delle risorse;
+    \item Pianificare le missioni abilitate con A* e, al primo avvio riuscito
+    di ogni ordine, congelare le deadline euclidee cumulative;
+    \item Registrare il programma del lotto e mantenere occupata la risorsa
+    fino al relativo istante di fine nel tempo simulato;
+    \item Avanzare al successivo controllo o completamento di lotto:
+    aggiornare le quote quando previsto e assegnare nuovo lavoro alle risorse
+    disponibili, ripetendo il ciclo finché restano ordini in coda o lotti attivi;
+    \item Produrre i riepiloghi di lavoro, makespan, deadline e assegnazioni,
+    considerando separatamente le esclusioni preliminari.
 \end{enumerate}
 
-Only the current assignment is applied. The optimization is repeated after
-this update, which gives the method its receding-horizon character.
+La dimensione dei lotti viene quindi adattata durante la simulazione,
+mentre la rete continua a governare l'esecuzione delle missioni e la riserva
+della risorsa all'interno dell'ordine. Il controllore non confronta
+configurazioni candidate e non risolve periodicamente un problema di
+ottimizzazione predittiva.
 
-\section{Completion-Time Criterion}
+Sono raccolti in questa sezione anche alcuni diagrammi UML che servono ad arricchire la
+soluzione attraverso quattro viste complementari: il flusso generale delle
+attività, le interazioni che governano i batch, l'esecuzione della singola
+missione e l'evoluzione dello stato di un ordine. Le rappresentazioni si
+riferiscono al processo con assegnazione durante l'esecuzione e consentono
+di collegare i vincoli del modello alle responsabilità delle principali
+funzioni del simulatore.
+Nei diagrammi di sequenza i partecipanti identificano funzioni o gruppi
+funzionali MATLAB: non rappresentano classi, servizi indipendenti o processi
+eseguiti in parallelo. La successione delle chiamate descrive il funzionamento
+del programma, mentre i tempi simulati restano associati alle singole risorse.
 
-The cost function is used for local assignment decisions, whereas the total
-simulation time is evaluated separately. A solution is considered acceptable
-when the final makespan does not exceed $8.5$ hours. A makespan between $7.5$
-and $8.5$ hours is reported as being inside the target window, while a result
-below $7.5$ hours is still accepted as a faster-than-target solution. This
-separation prevents the global completion-time requirement from distorting
-the local assignment cost.
+\subsection{Diagramma di attività del flusso generale}
+\label{sec:uml-flusso-generale}
+
+Il diagramma di attività offre una visione complessiva del processo, dalla
+configurazione iniziale alla produzione dei risultati. La prima parte
+comprende l'importazione dei dati, la costruzione della mappa e la preparazione
+delle missioni. La verifica della presenza di missioni ammissibili separa il
+normale proseguimento dall'interruzione anticipata in assenza di attività
+eseguibili. In questa lettura, l'esclusione delle missioni va intesa secondo
+le regole della Sezione~\ref{sec:progetto-spazio}: una coordinata finita esterna
+al dominio viene ricondotta entro i limiti e non comporta, da sola, lo scarto.
+
+Il flusso prosegue con la verifica delle compatibilità e l'inizializzazione
+della coda e delle deadline, senza assegnare anticipatamente tutti gli ordini.
+Il ciclo centrale distingue i controlli periodici dagli eventi di fine lotto:
+ai primi si aggiornano le quote, ai secondi si rende disponibile la risorsa.
+Le assegnazioni riguardano solo risorse libere e ordini ancora in coda.
+Per ogni lotto ammesso si costruisce la rete e si richiama il motore CTPN,
+conservando i tempi simulati di fine senza anticiparne l'osservazione.
+Il processo termina quando non rimangono ordini in coda o lotti attivi.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[font=\small,
+        runtimeStep/.style={draw,rounded corners,align=center,text width=9cm,
+                     inner sep=5pt},>=stealth]
+        \node[runtimeStep] (prepare) at (0,0)
+            {Importazione, mappa, missioni ammesse e compatibilità degli ordini};
+        \node[runtimeStep] (init) at (0,-1.9)
+            {Coda senza proprietari, deadline indefinite, quote $q_r=20$, tempo $t=0$};
+        \node[runtimeStep] (review) at (0,-3.8)
+            {Se è un istante di controllo: aggiornamento delle quote\\
+             dai tempi già osservati};
+        \node[runtimeStep] (assign) at (0,-5.7)
+            {Assegnazione di ordini interi alle risorse libere\\
+             e formazione dei nuovi lotti};
+        \node[runtimeStep] (run) at (0,-7.6)
+            {CTPN invariata: calcolo dei lotti ammessi\\
+             e registrazione degli istanti di fine};
+        \node[runtimeStep] (next) at (0,-9.5)
+            {Se restano ordini o lotti attivi: avanzamento al prossimo controllo
+             o fine lotto e aggiornamento delle risorse libere};
+        \node[runtimeStep] (end) at (0,-11.6)
+            {Coda vuota e nessun lotto attivo: riepiloghi e grafici};
+        \draw[->] (prepare)--(init);
+        \draw[->] (init)--(review);
+        \draw[->] (review)--(assign);
+        \draw[->] (assign)--(run);
+        \draw[->] (run)--(next);
+        \draw[->] (next.east)--(5.4,-9.5)--(5.4,-3.8)--(review.east);
+        \draw[->] (next)--node[right]{al termine}(end);
+    \end{tikzpicture}
+    \caption{Flusso operativo con assegnazione durante la simulazione e controlli periodici.}
+    \label{fig:uml1}
+\end{figure}
+
+\subsection{Diagramma di sequenza del controllore}
+\label{sec:uml-sequenza-batch}
+
+Il programma \texttt{main.m} delega l'assegnazione alla funzione
+\texttt{runRuntimeSimulation}, che svolge il ruolo di controllore.
+Il programma principale prepara dati, mappa,
+planner e parametri, quindi affida al controllore la coda degli ordini.
+Il frammento iterativo comprende l'aggiornamento delle quote agli istanti
+previsti, l'ammissione dei nuovi lotti e l'avanzamento dell'orologio.
+
+Per ogni lotto ammesso, la generazione della rete restituisce matrici e
+archi; il controllore prepara la marcatura e richiama \texttt{coloredPetri}.
+Il motore restituisce programma di esecuzione, tempi cumulati, posizioni,
+esiti delle missioni e stato aggiornato delle deadline. Il controllore
+conserva questi risultati e rende disponibile la risorsa soltanto quando
+il proprio orologio raggiunge la fine del lotto. Le chiamate successive
+non introducono una barriera temporale tra risorse e non ricostruiscono
+una marcatura sospesa, come discusso nella Sezione~\ref{sec:progetto-tempo}.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[font=\scriptsize,>=stealth,
+        every node/.style={fill=white},
+        actor/.style={draw,align=center,text width=2.4cm,minimum height=0.8cm}]
+        \node[actor] (main) at (0,0) {\texttt{main.m}};
+        \node[actor] (control) at (3.4,0) {Controllore\\
+            \texttt{runRuntimeSimulation}};
+        \node[actor] (net) at (6.8,0) {Generazione CTPN};
+        \node[actor] (engine) at (10.2,0) {\texttt{coloredPetri}};
+        \foreach \x in {0,3.4,6.8,10.2}
+            \draw[dashed] (\x,-0.45)--(\x,-8.9);
+        \draw[->] (0,-1.35)--node[above,align=center]{dati, planner\\e parametri}(3.4,-1.35);
+        \draw (2,-1.7) rectangle (11.6,-7.4);
+        \node[anchor=north west,fill=white] at (2,-1.7)
+            {\textbf{loop}: ordini in coda o lotti attivi};
+        \draw[->] (3.4,-2.3)--(4.6,-2.3)--(4.6,-2.8)--(3.4,-2.8);
+        \node[anchor=west,align=left] at (4.8,-2.5)
+            {controllo se previsto;\\assegnazione alle risorse libere};
+        \draw[->] (3.4,-3.4)--node[above]{lotto ammesso}(6.8,-3.4);
+        \draw[->,dashed] (6.8,-4)--node[above]{matrici e archi}(3.4,-4);
+        \draw[->] (3.4,-4.8)--node[above]{rete, marcatura, stato conservato}(10.2,-4.8);
+        \draw[->,dashed] (10.2,-5.6)--node[above]{programma, tempi, posizioni, esiti e deadline}(3.4,-5.6);
+        \draw[->] (3.4,-6.2)--(4.6,-6.2)--(4.6,-6.8)--(3.4,-6.8);
+        \node[anchor=west,align=left] at (4.8,-6.5)
+            {avanzamento al prossimo evento;\\disponibilità al termine del lotto};
+        \draw[->,dashed] (3.4,-8.3)--node[above,align=center]{risultati e\\storie del controllo}(0,-8.3);
+    \end{tikzpicture}
+    \caption{Orchestrazione dei lotti mediante il controllore esterno; il motore CTPN rimane invariato.}
+    \label{fig:uml2}
+\end{figure}
+
+\subsection{Diagramma di sequenza dell'esecuzione di una missione}
+\label{sec:uml-sequenza-missione}
+
+Il terzo diagramma approfondisce l'interazione tra il motore CTPN, la funzione
+che gestisce lo scatto della transizione, il planner A*, la gestione delle
+deadline e l'aggiornamento dello stato della risorsa. Dopo la selezione del
+colore, la transizione identifica missione, risorsa e tempo associato al token.
+Il diagramma distingue le transizioni a durata nulla dalla transizione
+centrale, che richiama la pianificazione delle tratte di avvicinamento e di
+trasporto e determina la durata simulata.
+
+Il frammento alternativo evidenzia i due esiti della pianificazione. Se il
+percorso è fattibile, la gestione delle deadline congela le previsioni
+cumulative al primo avvio riuscito dell'ordine; nelle chiamate successive
+mantiene i valori già fissati. Vengono quindi registrati l'esito e i tempi
+della missione e aggiornati il lavoro cumulato e la posizione della risorsa.
+La registrazione del completamento esprime il risultato calcolato nel tempo
+simulato, senza richiedere un'attesa della stessa durata nel tempo reale.
+
+Se il percorso non è fattibile, la missione viene registrata come fallita
+e il token viene trasferito al collegamento verso la missione successiva,
+oppure al posto comune quando termina l'ordine. Tempo cumulato e posizione
+rimangono invariati. Questa diramazione chiarisce che il fallimento della
+singola missione non comporta la perdita del token né l'arresto automatico
+delle attività successive. Le interazioni con la gestione delle deadline
+hanno funzione osservativa e non intervengono nell'abilitazione delle
+transizioni o nella scelta del percorso.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/UML/UML3}
+	\caption{Esecuzione di una missione nel motore CTPN, invariata rispetto alla modifica della politica di assegnazione.}
+	\label{fig:uml3}
+\end{figure}
+
+\subsection{Diagramma degli stati di un ordine}
+\label{sec:uml-stati-ordine}
+
+L'ultimo diagramma rappresenta il ciclo di vita dell'ordine nel monitoraggio
+temporale. All'inizializzazione l'ordine si trova nello stato di attesa,
+\texttt{pending}, con proprietario e deadline ancora indefiniti. L'ammissione
+in un lotto assegna il proprietario, ma non avvia da sola il conteggio della
+deadline e non cambia lo stato operativo. Il primo percorso
+pianificato con successo determina il congelamento delle previsioni e il
+passaggio allo stato \texttt{running}. Un fallimento precedente a questo
+avvio lascia invece l'ordine in attesa, purché esistano missioni ancora non
+terminali. Se tutte le missioni falliscono, l'ordine può diventare incompleto
+senza essere mai entrato nello stato di esecuzione.
+
+Le condizioni associate alle transizioni distinguono i due stati terminali.
+L'ordine è \texttt{completed} soltanto quando tutte le sue missioni ammesse
+sono completate; è \texttt{incomplete} quando tutte sono terminali e almeno
+una è fallita. Una missione ancora pendente non è terminale e può mantenere l'ordine
+nello stato di attesa o di esecuzione; il controllore segnala però come
+anomalia la restituzione di un lotto con missioni non eseguite. Per un ordine con una sola
+missione, la registrazione del primo completamento può rendere immediatamente
+terminale lo stato appena attivato.
+
+Il diagramma separa inoltre l'esito operativo dalla puntualità: un ordine
+completato può risultare in anticipo o in ritardo rispetto alla propria
+deadline. Slack e ritardo sono indicatori del completamento e non costituiscono
+ulteriori stati che modificano l'esecuzione. Il giudizio di completezza resta
+riferito alle missioni ammesse; le esclusioni preliminari devono essere
+considerate separatamente per valutare l'ordine originario.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\linewidth]{imgs/UML/UML4}
+	\caption{Stati dell'ordine nel registro delle deadline; l'assegnazione del proprietario non introduce un nuovo stato operativo.}
+	\label{fig:uml4}
+\end{figure}

@@ -1,0 +1,449 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[italian]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlist{itemsep=3pt,topsep=3pt}
+\title{Scheduling predittivo con mini-batch candidati\\\large Formulazione operativa e spiegazione del metodo}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+Il sistema dispone di \textbf{otto risorse fisse}. Al passo $k$ dobbiamo scegliere le missioni da eseguire nel batch $k+1$ e organizzarne l'esecuzione. Per farlo generiamo e simuliamo \textbf{$n$ sottoinsiemi candidati delle missioni residue}. I candidati possono contenere missioni di ordini diversi, possono condividere alcune missioni e possono essere eseguiti con sequenze differenti. Soltanto il candidato scelto diventa il prossimo batch operativo.
+
+Il controllore decide quindi sia \textbf{quali missioni anticipare}, sia \textbf{come sequenziarle}. La previsione serve a confrontare le conseguenze di queste scelte sull'uso delle risorse e sui tempi. Questa formulazione corregge l'ipotesi precedente, che confrontava soltanto permutazioni di un unico insieme già fissato.
+
+\section{Stato del sistema e missioni selezionabili}
+
+Indichiamo con $x_k$ la situazione usata per prendere la decisione: ora corrente, missioni completate, missioni in corso, missioni ancora da avviare, posizioni e disponibilità delle risorse, operatore di ciascun ordine e deadline già attivate.
+
+Sia $\mathcal{M}$ l'insieme iniziale delle missioni. In ogni osservazione distinguiamo:
+\begin{equation}
+    \mathcal{M}=\mathcal{C}_k\,\dot\cup\,\mathcal{I}_k\,\dot\cup\,\mathcal{R}_k,
+\end{equation}
+con $\mathcal{C}_k$ missioni completate, $\mathcal{I}_k$ missioni in corso e $\mathcal{R}_k$ missioni ancora da iniziare. Le missioni in corso sono impegni da conservare, non alternative da riassegnare o eseguire di nuovo.
+
+La scelta dei candidati avviene sulle missioni residue \emph{liberamente programmabili}. Se il batch $k$ è già impegnato ma ancora in esecuzione, anche le sue missioni accodate sono escluse dalla selezione. Chiamiamo $\mathcal{A}_k\subseteq\mathcal{R}_k$ l'insieme delle missioni disponibili per il nuovo programma.
+
+Per una prima implementazione si può decidere dopo il completamento del batch $k$: in quel caso le sue missioni sono tutte osservate e non vi sono impegni residui del batch. Se si vuole invece calcolare durante l'esecuzione di $k$, bisogna prevedere quando e dove si libereranno le risorse e verificare nuovamente il programma prima di applicarlo. Le due modalità richiedono una gestione diversa dello stato, ma usano lo stesso principio di confronto tra candidati.
+
+\section{I $n$ mini-batch sono alternative per lo stesso passo}
+
+Sia $b$ il numero di missioni per mini-batch, fissato come parametro. Generiamo
+\begin{equation}
+    B_{k+1}^{(i)}\subseteq\mathcal{A}_k,
+    \qquad |B_{k+1}^{(i)}|=b_k,
+    \qquad i=1,\ldots,n,
+    \label{eq:candidati}
+\end{equation}
+con $b_k=\min(b,|\mathcal{A}_k|)$ per consentire anche l'ultimo batch incompleto. I vincoli operativi possono rendere non ammissibile un sottoinsieme di questa dimensione; la cardinalità, da sola, non garantisce che sia eseguibile.
+
+L'indice $i$ identifica una \textbf{possibile scelta per $k+1$}. Non indica un istante successivo. Tutti i candidati partono dalla stessa situazione iniziale e sono confrontati prima di eseguirne uno.
+
+Non si richiede che siano disgiunti:
+\begin{equation}
+    B_{k+1}^{(i)}\cap B_{k+1}^{(j)}\neq\varnothing
+\end{equation}
+è perfettamente consentito. Se una missione compare in due candidati, viene simulata in due alternative; sarà eseguita una sola volta se appartiene al candidato effettivamente scelto.
+
+\subsection*{Esempio di composizioni diverse}
+
+Supponiamo che $A_1,B_1,\ldots,L_1$ siano le prossime missioni ammissibili di dodici ordini. Con $b=8$ possiamo costruire, per esempio,
+\begin{align*}
+    B_{k+1}^{(1)}&=\{A_1,B_1,C_1,D_1,E_1,F_1,G_1,H_1\},\\
+    B_{k+1}^{(2)}&=\{A_1,B_1,I_1,J_1,E_1,F_1,K_1,L_1\},\\
+    B_{k+1}^{(3)}&=\{C_1,D_1,I_1,J_1,G_1,H_1,K_1,L_1\}.
+\end{align*}
+
+Il secondo candidato conserva alcune missioni del primo e ne sostituisce altre. Il terzo combina nuovamente le missioni residue. Sono tre alternative per il \emph{medesimo} batch successivo. Il numero otto nell'esempio riguarda la cardinalità scelta; non impone una missione per operatore. La distribuzione effettiva dipende da compatibilità e assegnazioni degli ordini.
+
+\section{Composizione, sequenza e assegnazione}
+
+Un insieme di missioni non definisce ancora un programma eseguibile. Per ogni candidato bisogna stabilire una sequenza e sapere quale risorsa esegue ciascuna missione. Possiamo rappresentare il programma candidato con
+\begin{equation}
+    u_{k+1}^{(i)}=(B_{k+1}^{(i)},\sigma_{k+1}^{(i)},a_{k+1}^{(i)}),
+\end{equation}
+ove $\sigma$ descrive le code di esecuzione e $a$ le assegnazioni. Si distinguono quindi:
+\begin{itemize}
+    \item \textbf{selezione}: quali missioni residue entrano nel prossimo batch;
+    \item \textbf{sequenziamento}: in quale ordine vengono servite dalle rispettive risorse;
+    \item \textbf{assegnazione}: quale operatore esegue le missioni di ciascun ordine.
+\end{itemize}
+
+Le prime due scelte fanno parte della ricerca descritta qui. Avere otto risorse fisse non significa, di per sé, che tutte le assegnazioni siano immutabili. Come semplificazione iniziale si possono mantenere le assegnazioni del piano offline. Se invece si decide di ottimizzare anche l'assegnazione degli ordini non iniziati, aumentano le alternative da provare. Per gli ordini già iniziati l'operatore resta comunque vincolato.
+
+Due programmi possono usare lo stesso sottoinsieme ma sequenze diverse; in tal caso sono varianti di sequenziamento, non due composizioni diverse. Conviene registrare separatamente quanti sottoinsiemi e quante varianti sono stati simulati. Le risorse lavorano in parallelo, ciascuna seguendo la propria coda.
+
+\section{Come generare candidati utili}
+
+Con $m$ missioni disponibili, i sottoinsiemi di cardinalità $b$ sono potenzialmente $\binom{m}{b}$, prima ancora di considerare sequenze e assegnazioni. Non è necessario enumerarli tutti. Il parametro $n$ limita il numero di composizioni da valutare.
+
+Una procedura iniziale può costruire una soluzione di base dal piano precedente e generare le altre mediante sostituzioni: togliere una o più missioni e inserire altre missioni residue. Le scelte possono favorire ordini già aperti, missioni vicine alle risorse, distribuzione del lavoro tra operatori e ordini in attesa da molto tempo. Una componente casuale controllata può aggiungere varietà, ma ogni candidato deve essere verificato.
+
+\textbf{Le missioni possono essere mischiate tra ordini diversi, ma non ignorando i vincoli interni.} Se $A_2$ deve seguire $A_1$, è possibile selezionare $A_2$ soltanto se $A_1$ è già completata, è un impegno precedente con completamento previsto, oppure compare nello stesso candidato prima di $A_2$.
+
+In particolare:
+\begin{itemize}
+    \item tutte le missioni dello stesso ordine devono usare lo stesso operatore;
+    \item nella regola iniziale, una priorità \texttt{NM\_PRIORITY} maggiore precede una minore \emph{all'interno dello stesso ordine};
+    \item nessuna risorsa può eseguire due missioni contemporaneamente;
+    \item compatibilità, disponibilità e percorsi devono consentire l'esecuzione;
+    \item l'ordine può attraversare più batch, conservando operatore e ora del primo avvio.
+\end{itemize}
+
+Conservare poche alternative limita il costo di calcolo, non obbliga a scegliere sempre dallo stesso prefisso della lista. Si può consultare il registro del residuo per generare combinazioni, senza risolvere ogni volta l'ottimizzazione completa di tutte le missioni.
+
+\section{Che cosa restituisce la simulazione}
+
+Ogni programma viene valutato su una copia indipendente dello stato. Il simulatore deve considerare posizione iniziale, spostamenti, carico e scarico, attese e vincoli delle risorse. Per il candidato $i$ restituisce almeno:
+\begin{itemize}
+    \item inizio e completamento previsti delle missioni;
+    \item tempo di completamento dell'intero batch;
+    \item lavoro attivo e attesa di ciascuna delle otto risorse;
+    \item ordini completati e ordini ancora aperti;
+    \item posizioni finali e missioni lasciate nel residuo.
+\end{itemize}
+
+Indichiamo con $t_s$ l'istante comune da cui si valuta l'avvio del prossimo batch. Se $\widehat c_j^{(i)}$ è il completamento previsto della missione $j$, la durata del candidato è
+\begin{equation}
+    \widehat T_i=\max_{j\in B_{k+1}^{(i)}}\widehat c_j^{(i)}-t_s.
+\end{equation}
+
+Conta la risorsa che termina per ultima, non la media delle durate. Se si pianifica mentre il batch corrente è ancora attivo, la previsione deve includere anche gli impegni che ritardano la disponibilità delle risorse.
+
+Per esempio, se $\widehat L_{r,i}$ è il tempo attivo della risorsa $r$ nel candidato, in assenza di altri lavori sovrapposti l'utilizzo medio previsto è
+\begin{equation}
+    \widehat U_i=\frac{\sum_{r=1}^{8}\widehat L_{r,i}}{8\widehat T_i}.
+\end{equation}
+
+Un utilizzo maggiore non garantisce una soluzione migliore: potrebbe dipendere da spostamenti inutili. Va letto insieme a durata, attese e lavoro completato. Bilanciare il carico significa evitare colli di bottiglia quando possibile, senza creare lavoro o attese artificiali per rendere uguali gli operatori.
+
+\section{Il confronto deve considerare anche ciò che resta fuori}
+
+Con sottoinsiemi diversi emerge un problema importante. Un candidato può finire rapidamente perché contiene soltanto missioni brevi, lasciando agli aggiornamenti successivi tutte quelle lunghe. Ridurre il tempo del prossimo batch non equivale automaticamente a ridurre il tempo di tutta la giornata.
+
+Una funzione di confronto proposta è
+\begin{equation}
+    J_i=\widehat T_i+\widehat V(x_{k+1|k}^{(i)}),
+    \label{eq:costo}
+\end{equation}
+dove $x_{k+1|k}^{(i)}$ è lo stato previsto dopo il candidato e $\widehat V$ stima il tempo necessario per il lavoro ancora da eseguire. Entrambi i termini sono tempi. L'insieme iniziale del lavoro è comune a tutte le prove; il residuo cambia in base a ciò che ciascun candidato ha completato.
+
+Con assegnazioni fisse, una stima economica è il massimo carico residuo tra le otto risorse. Per esempio,
+\begin{equation}
+    \widehat V(x)=\max_{r=1,\ldots,8}\widehat W_r(x),
+\end{equation}
+con $\widehat W_r$ somma delle durate stimate delle missioni rimaste alla risorsa $r$. Questa approssimazione non rappresenta perfettamente spostamenti futuri, attese e vincoli: va verificata, non trattata come il vero tempo finale.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Candidato & Durata batch & Stima residuo & Punteggio $J_i$\\
+\midrule
+1 & 8 min & 30 min & 38 min\\
+2 & 11 min & 22 min & 33 min\\
+3 & 10 min & 27 min & 37 min\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Questi numeri sono illustrativi. Supponendo tutti i candidati ammissibili, il criterio sceglie il secondo: richiede più tempo subito, ma lascia una situazione complessivamente più favorevole. Il solo tempo del batch avrebbe scelto il primo.
+
+A parità di punteggio si possono preferire più ordini chiusi, minore scostamento dal riferimento e minore squilibrio tra risorse. Questa è una gerarchia iniziale da valutare. Se si scelgono pesi per combinare tempi, conteggi e percentuali, occorre normalizzare le grandezze e dichiarare il significato dei pesi.
+
+\subsection*{Deadline e rischio di rinviare sempre gli stessi ordini}
+
+Un ordine con durata massima $D_o$, iniziato all'istante $S_o$, deve terminare entro $S_o+D_o$. Questa scadenza resta invariata. Se il candidato apre un ordine senza chiuderlo, bisogna stimarne la continuazione prima di dichiarare rispettato il limite.
+
+La durata massima non comprende l'attesa precedente all'avvio dell'ordine. Per questo, da sola, non impedisce di rimandare indefinitamente un ordine non iniziato. Nella generazione dei candidati va previsto un criterio di inclusione degli ordini più a lungo rinviati, da tarare e verificare, oltre alla valutazione del residuo e dei completamenti a fine turno. Un costo approssimato non fornisce da solo una garanzia contro questi rinvii.
+
+\section{$n$ candidati e orizzonte $H$ sono due cose diverse}
+
+Il numero $n$ indica \textbf{quante alternative confrontiamo per il prossimo batch}. L'orizzonte $H$ indica \textbf{quanti batch consecutivi prevediamo per valutare ogni alternativa}.
+
+Se generiamo $n=20$ candidati, non stiamo pianificando venti batch da eseguire uno dopo l'altro. Stiamo provando venti modi diversi di costruire il batch $k+1$.
+
+La simulazione di ciascun candidato fino alla sua fine dà una previsione a un passo ($H=1$). È già una decisione basata su un modello e aggiornata con le osservazioni. Per mantenere la previsione su tre batch descritta nella proposta del professore, ogni candidato deve invece avere una continuazione:
+\[
+\begin{array}{ccccc}
+ B_{k+1}^{(1)}&\longrightarrow&B_{k+2|k}^{(1)}&\longrightarrow&B_{k+3|k}^{(1)}\\
+ B_{k+1}^{(2)}&\longrightarrow&B_{k+2|k}^{(2)}&\longrightarrow&B_{k+3|k}^{(2)}\\
+ \vdots&&\vdots&&\vdots\\
+ B_{k+1}^{(n)}&\longrightarrow&B_{k+2|k}^{(n)}&\longrightarrow&B_{k+3|k}^{(n)}
+\end{array}
+\]
+
+Ogni riga è una traiettoria alternativa. Nella stessa riga, le missioni completate non possono essere selezionate di nuovo nei batch successivi. Tra righe diverse, invece, la sovrapposizione è ammessa perché si tratta di prove alternative.
+
+Per contenere il costo, i batch successivi possono essere costruiti mediante la stessa regola euristica applicata al residuo di ciascun candidato: non è necessario generare altre $n$ alternative a ogni livello. In questo caso si simulano indicativamente $nH$ batch, oltre ai controlli e alle eventuali varianti di sequenza. La ricerca è limitata, non esaustiva.
+
+Con $H>1$, il costo~\eqref{eq:costo} diventa
+\begin{equation}
+    J_i=\sum_{\ell=1}^{H}\widehat T_{\ell,i}
+        +\widehat V(x_{k+H|k}^{(i)}).
+\end{equation}
+
+Il significato non cambia: tempo previsto lungo la traiettoria, più una stima del lavoro non ancora incluso. Se il lavoro termina prima, si usano solo i batch necessari. Per ordini ancora aperti rimane il controllo delle scadenze oltre l'orizzonte.
+
+\section{Scelta, esecuzione e nuovo aggiornamento}
+
+Dopo aver escluso i candidati non ammissibili, selezioniamo
+\begin{equation}
+    i^\star\in\underset{i\ \text{ammissibile}}{\operatorname{arg\,min}}J_i,
+    \qquad B_{k+1}=B_{k+1}^{(i^\star)}.
+\end{equation}
+
+Si applica soltanto il programma del primo batch scelto. Le missioni presenti esclusivamente nei candidati scartati restano nel residuo. Vengono rimosse dal residuo operativo solo le missioni effettivamente completate, non quelle che hanno terminato nelle simulazioni di prova.
+
+Dopo l'esecuzione osserviamo i tempi reali, le posizioni e gli ordini chiusi. Le previsioni possono essere state imprecise a causa di disturbi: il nuovo confronto riparte dalle osservazioni aggiornate. Questo passaggio realizza il feedback e rende mobile l'orizzonte.
+
+Il riferimento offline resta utile per misurare l'avanzamento. All'ora $t$, lo scostamento è
+\begin{equation}
+    e(t)=N^{\mathrm{ref}}(t)-N^{\mathrm{eff}}(t).
+\end{equation}
+
+Un valore positivo indica meno missioni completate rispetto al piano. Il confronto avviene alla stessa ora fisica, non soltanto allo stesso indice di batch. Lo scostamento in missioni è diverso dal ritardo in minuti e va affiancato ai tempi e al numero di ordini chiusi.
+
+\section{Integrazione con le reti di Petri esistenti}
+\label{sec:mpc-petri}
+
+La rete di Petri colorata può diventare il \textbf{modello con cui l'MPC valuta i candidati}. L'MPC propone le missioni e le loro sequenze; la rete verifica quali avvii sono consentiti e simula l'evoluzione delle risorse. Il motore temporale calcola quando avvengono gli eventi. Non occorre sostituire la rete con un modello lineare per realizzare questo tipo di controllo predittivo.
+
+L'integrazione qui descritta è una proposta di modifica dei componenti letti nella cartella \texttt{sim}: non è ancora un'interfaccia implementata.
+
+\subsection{Che cosa ereditiamo dalle due tesi}
+
+Le due tesi dell'anno accademico 2021/2022 descrivono parti complementari dello stesso approccio. \textbf{Parlato} sviluppa soprattutto la generazione del modello a partire dalle missioni, la compatibilità delle risorse e la stima dei tempi tramite path planning. \textbf{Rotondo} descrive soprattutto l'evoluzione temporizzata della rete, la risoluzione dei conflitti e l'uso dei risultati per valutare numero e carico degli operatori \cite[sezioni 2.3--2.5]{Parlato}\cite[sezioni 2.3--2.6]{Rotondo}.
+
+Nelle indicazioni di pagina che seguono usiamo la numerazione stampata nelle tesi: nei due PDF la pagina del visualizzatore è maggiore di uno. I riferimenti ai file MATLAB riguardano invece il codice consultato nella cartella \texttt{sim}. La descrizione storica, il codice attuale e le estensioni MPC sono distinti: non attribuiamo alle vecchie tesi le nuove regole sugli ordini.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{2.4cm}XX@{}}
+\toprule
+Componente & Base sviluppata & Impiego nella proposta MPC\\
+\midrule
+Generazione & Moduli di missione, matrici e archi colorati & Generare il modello di ciascun sottoinsieme candidato\\
+Percorsi & Posizione della risorsa, percorso alla presa e alla consegna & Stimare durate diverse per composizioni e sequenze diverse\\
+Simulazione & Marcatura, eventi temporizzati e assegnazione delle risorse & Prevedere l'esito di ciascun programma prima di applicarlo\\
+Ottimizzazione & Valutazione del carico e del numero di risorse & Confrontare $n$ candidati mantenendo otto risorse\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Il modulo di missione descritto da Parlato}
+
+Parlato descrive una missione con \textbf{tre transizioni e due posti interni}: la prima transizione acquisisce la risorsa, la seconda rappresenta la lavorazione temporizzata, la terza restituisce la risorsa. Avvio e rilascio hanno durata nulla nel modello; la durata della missione è associata alla transizione centrale \cite[sezione 2.3.2, pp. 19--22, figure 2.5--2.8]{Parlato}.
+
+Usando nomi simbolici per rendere leggibile il modulo:
+\[
+ p_{\mathrm{libere}}
+ \longrightarrow t_j^{\mathrm{avvio}}
+ \longrightarrow p_j^{\mathrm{attiva}}
+ \longrightarrow t_j^{\mathrm{lavoro}}
+ \longrightarrow p_j^{\mathrm{fine}}
+ \longrightarrow t_j^{\mathrm{rilascio}}
+ \longrightarrow p_{\mathrm{libere}}.
+\]
+
+I nomi dei due posti interni sono descrittivi; nel codice si usano indici numerici. La transizione centrale rappresenta l'intera durata stimata, non ulteriori transizioni separate per ogni tratto del percorso. Il posto comune delle risorse, \texttt{p1} nel simulatore, collega i moduli e rappresenta la competizione tra missioni per gli stessi operatori.
+
+Se il token del colore 3 entra nel modulo della missione $j$, la risorsa 3 resta impegnata fino al rilascio. Lo stesso token non può abilitare contemporaneamente un'altra missione. Con $b$ missioni, la struttura costruita dal generatore ha $3b$ transizioni e $2b+1$ posti, contando il posto comune. Questa cardinalità riguarda il modulo di base, prima di eventuali posti aggiuntivi per nuovi vincoli.
+
+\subsection{Matrici, colori e compatibilità}
+
+Nelle tesi, la struttura è separata dalle informazioni sui colori. Le matrici \texttt{Pre} e \texttt{Post} hanno \textbf{transizioni sulle righe e posti sulle colonne}. La tabella \texttt{Arc} conserva origine, destinazione e matrice dei colori di ciascun arco. La marcatura \texttt{m} ha invece posti sulle righe e colori sulle colonne \cite[sezione 2.6.1, pp. 14--15]{Rotondo}.
+
+Con otto risorse, la marcatura di base ha quindi otto colonne. Se tutte sono disponibili, la riga del posto comune contiene un token per colore. Se una risorsa è impegnata, il suo token si trova nel modulo attivo e non va ricreato nel posto libero durante la generazione di un candidato.
+
+Parlato divide la generazione in tre funzioni \cite[sezione 2.3.2, pp. 17--23]{Parlato}:
+\begin{itemize}
+    \item \texttt{assignMission}: individua le risorse compatibili con la missione usando la tabella delle attitudini territoriali e prepara i colori ammessi;
+    \item \texttt{generateMatrices}: ripete il modulo di missione e costruisce la struttura del batch;
+    \item \texttt{generateArcs}: collega la struttura alle informazioni sui colori nella tabella degli archi.
+\end{itemize}
+
+\textbf{Compatibilità non significa scelta definitiva dell'operatore.} Una missione può ammettere più colori; la selezione di quello effettivamente usato avviene durante la costruzione o l'esecuzione del programma. Con i nuovi vincoli, bisogna anche verificare che l'operatore sia compatibile con tutte le missioni dell'ordine e conservare l'associazione fino alla chiusura.
+
+\subsection{La durata della transizione centrale}
+
+Nel modello di Parlato, il path planning usa A* sulla mappa del magazzino. Il percorso comprende due parti: dalla posizione attuale della risorsa al punto di presa e dal punto di presa alla destinazione. La struttura \texttt{resourcePos} conserva le posizioni necessarie a questo calcolo \cite[sezione 2.4.1, pp. 24--30]{Parlato}.
+
+La tesi descrive una stima che usa una velocità di circa $5{,}55$ m/s, maggiora del 20\% il tempo di viaggio e aggiunge 60 secondi per carico e scarico. Una riscrittura di quella stima, con distanze espresse in metri, è
+\begin{equation}
+    \widehat\tau_j(r)
+    =1{,}2\,\frac{d(q_r,s_j)+d(s_j,g_j)}{5{,}55}
+      +60\quad\text{secondi},
+\end{equation}
+con $q_r$ posizione della risorsa, $s_j$ punto di presa e $g_j$ destinazione. Qui $s_j$ indica un punto geometrico, non un istante di avvio.
+
+Questi sono \textbf{parametri del modello storico}, non valori automaticamente validati per l'MPC attuale. Occorre verificare scala della mappa, distanze, tempi di servizio e calibrazione sui dati disponibili. La maggiorazione del 20\% è un correttivo medio: non equivale a simulare esplicitamente collisioni, congestione o disturbi casuali.
+
+Per l'MPC questa dipendenza dalla posizione è fondamentale. Cambiare la sequenza modifica la posizione da cui inizia la missione successiva e quindi può cambiare il tempo previsto. Una distanza statica tra due punti può essere memorizzata e riutilizzata; l'avvicinamento non va riutilizzato come durata fissa se cambia la posizione di partenza. Parlato identifica inoltre il path planning come principale costo computazionale nei casi esaminati: provare $n$ candidati richiede di misurare anche questo costo, senza trasferire automaticamente le prestazioni del vecchio esperimento alla nuova ricerca \cite[sezioni 2.4.1 e 3.6]{Parlato}.
+
+\subsection{SEL e politiche di scelta in Rotondo}
+
+Rotondo presenta una simulazione basata sulla \textbf{Scheduled Event List}: la rete individua gli eventi possibili, mentre la lista temporale determina il prossimo evento da elaborare. Dopo ogni evento si aggiornano ora, stato ed eventi ancora ammissibili \cite[sezione 2.3, pp. 10--11]{Rotondo}.
+
+Questa distinzione rimane nell'MPC: il controllore può decidere un avvio, ma non può rendere libero un operatore prima del completamento temporizzato della sua missione. Il risultato è una previsione di tempi e disponibilità, non soltanto una sequenza di scatti senza durata.
+
+La gestione dei conflitti descritta da Rotondo favorisce, tra i colori disponibili, quello con minore tempo accumulato. Sono inoltre descritte politiche che rendono temporaneamente indisponibile la risorsa più utilizzata, fino al recupero delle altre, e che bloccano una risorsa al superamento di una soglia di lavoro \cite[sezioni 2.6.2--2.6.3, pp. 16--20]{Rotondo}.
+
+\textbf{Queste politiche di bilanciamento non sono tutte vincoli fisici della rete.} Nel nuovo sistema una soglia può essere mantenuta se rappresenta un limite operativo effettivo. Bloccare deliberatamente un operatore solo per pareggiare i carichi è invece una scelta da rivalutare rispetto all'obiettivo di ridurre i tempi. Se la si conserva, deve comparire sia nella previsione sia nell'esecuzione, con le sue attese; se la si sostituisce con una penalità nel costo MPC, la modifica va dichiarata. Soprattutto, non deve alterare di nascosto la sequenza candidata.
+
+\subsection{Dai vecchi batch ai candidati del nuovo MPC}
+
+Le due tesi descrivono batch costruiti orientativamente con un numero di missioni doppio rispetto alle risorse, per limitare le dimensioni del modello. Con otto risorse questo suggerisce $b=16$ come valore iniziale da \emph{provare}, non come obbligo teorico. Parlato descrive anche una distribuzione del resto nei primi batch; il documento attuale adotta invece l'ultima dimensione ridotta quando necessario. Sono scelte di partizionamento, non proprietà delle reti di Petri \cite[sezione 2.3.1]{Parlato}\cite[sezione 2.6.3]{Rotondo}.
+
+La modifica richiesta è sostanziale: anziché generare soltanto il modello del prossimo gruppo già fissato, generiamo $n$ modelli candidati, oppure riutilizziamo una struttura equivalente cambiando le missioni associate. Ogni modello contiene una diversa combinazione delle missioni residue e parte dallo stesso stato delle otto risorse.
+
+\[
+\begin{gathered}
+ x_k\ \longrightarrow\ \{B_{k+1}^{(1)},\ldots,B_{k+1}^{(n)}\}\\
+ \longrightarrow\ \text{generazione e simulazione delle CPN candidate}\\
+ \longrightarrow\ \{J_1,\ldots,J_n\}
+ \longrightarrow\ \text{esecuzione del solo candidato scelto}.
+\end{gathered}
+\]
+
+La generazione di Parlato viene quindi richiamata all'interno del confronto predittivo; il simulatore di Rotondo ne valuta l'esito temporale. L'MPC aggiunge selezione tra alternative, previsione della continuazione quando richiesta e aggiornamento dalle osservazioni.
+
+Le vecchie valutazioni riguardano anche il dimensionamento degli operatori. Qui il numero resta otto. Inoltre Rotondo dichiara nel caso di validazione l'assenza di vincoli sul sequenziamento: \textbf{precedenze interne, operatore unico per ordine e deadline persistenti devono essere introdotti e verificati}, non considerati già garantiti dalla rete storica \cite[sezione 3.1, pp. 33--34]{Rotondo}.
+
+Nel codice consultato, \texttt{coloredPetri.m} e le funzioni di avanzamento costituiscono la base operativa; \texttt{r\_conflict\_colored.m} applica la scelta locale della risorsa. I punti seguenti spiegano come adattare questi componenti al nuovo programma predittivo.
+
+\subsection{Il punto in cui interviene l'MPC}
+
+Supponiamo che due missioni $A_1$ e $B_1$ possano usare la stessa risorsa libera. La rete esprime il conflitto: entrambe sono possibili, ma non possono occupare contemporaneamente quella risorsa. L'MPC confronta programmi che privilegiano l'una o l'altra e sceglie quale avviare prima.
+
+Occorre quindi separare due domande:
+\begin{itemize}
+    \item \textbf{La missione può partire?} Rispondono la rete e i controlli di compatibilità, precedenza e proprietà dell'ordine.
+    \item \textbf{Tra le missioni che possono partire, quale deve partire?} Risponde il programma candidato generato dall'MPC.
+\end{itemize}
+
+Indichiamo con $E(x)$ le coppie missione--risorsa abilitate dalla rete nello stato $x$ e con $D(x,u)$ quelle autorizzate dal programma $u$. Gli avvii consentiti sono
+\begin{equation}
+    E_{\mathrm{avvio}}(x,u)=E(x)\cap D(x,u).
+\end{equation}
+
+La selezione deve inoltre evitare che più avvii simultanei consumino lo stesso token. Il programma non rende eseguibile una transizione priva delle risorse necessarie: può scegliere e limitare avvii abilitati, non forzarne uno impossibile.
+
+Operativamente, \texttt{r\_conflict\_colored.m} dovrà ricevere il candidato, le code per risorsa e i vincoli d'ordine. La sua regola locale sul carico potrà essere usata per costruire un candidato o risolvere parità consentite; non dovrà sostituire autonomamente la sequenza o l'operatore che si stanno valutando. Diversamente, l'MPC crederebbe di simulare un programma mentre la rete ne esegue un altro.
+
+Le missioni residue non selezionate restano nel registro globale ma non sono autorizzate ad avviarsi in quella prova. Se il programma usa code rigide, una missione successiva non supera automaticamente quella in testa: un eventuale superamento deve essere una regola esplicita, identica nella previsione e nell'esecuzione.
+
+\subsection{Marcatura e tempo: che cosa deve contenere lo stato}
+
+La marcatura indica dove si trovano i token, ma da sola non dice quanto manca alla fine di una missione. Per riprendere correttamente una simulazione serve uno stato più completo:
+\begin{equation}
+    x=(t,m,\mathcal{L},\mathcal{Q},\mathcal{G},\mathcal{P}),
+\end{equation}
+ove $t$ è l'ora, $m$ la marcatura colorata, $\mathcal{L}$ gli eventi pendenti con i loro tempi, $\mathcal{Q}$ le code e gli impegni, $\mathcal{G}$ il registro ordini e $\mathcal{P}$ le posizioni e le fasi operative delle risorse. Si conservano inoltre gli stati interni modificabili del simulatore, come gli archi residui e l'avanzamento delle transizioni.
+
+Nella rete non colorata, usando la convenzione posti per righe e transizioni per colonne, il bilancio di uno scatto abilitato è
+\begin{equation}
+    m^+=m+(Post-Pre)v.
+\end{equation}
+
+Nel codice \texttt{pre\_m} e \texttt{post\_m} hanno invece le transizioni sulle righe: per un bilancio aggregato con marcatura colonna si usa la matrice trasposta. La rete colorata richiede anche le trasformazioni dei colori presenti negli archi. Il bilancio dei token non sostituisce né la verifica di abilitazione né la temporizzazione degli eventi.
+
+Quando parte una missione, si occupa la risorsa e si programma il relativo avanzamento temporale. Il completamento avviene al tempo determinato dalla durata prevista o effettiva. L'MPC non può scegliere di anticipare arbitrariamente una transizione di completamento per ridurre il costo.
+
+Nel motore attuale, \texttt{next\_transition\_c.m} richiama il path planner e \texttt{updateBatch.m}; quest'ultima accumula la durata e porta \texttt{resourcePos} alla fine del percorso. Questo aggiornamento può rappresentare l'avanzamento di una \emph{previsione}, ma non va interpretato come una posizione già osservata prima che il movimento termini. Per l'esecuzione online devono essere distinti avvio, posizione prevista e completamento effettivo.
+
+\subsection{Come simulare gli $n$ candidati sulla rete}
+
+Per ciascuna alternativa la procedura è:
+\begin{enumerate}
+    \item creare una copia indipendente dello stato osservato $x_k$;
+    \item costruire o selezionare i moduli delle missioni del candidato, conservando gli eventuali impegni già attivi;
+    \item collegare le transizioni alle missioni mediante identificativi stabili, perché l'indice locale della transizione può cambiare tra candidati;
+    \item passare alla rete il programma $u_{k+1}^{(i)}$, cioè selezione, code e assegnazioni;
+    \item far evolvere la rete e il motore temporale, aggiornando avvii, completamenti, disponibilità e registro ordini;
+    \item raccogliere tempi e stato finale previsto per calcolare il costo $J_i$.
+\end{enumerate}
+
+Le matrici strutturali non modificate possono essere condivise; marcatura, archi consumati, code, registro ordini e posizioni devono essere indipendenti tra prove. Anche un oggetto con stato interno modificabile non deve trasmettere a un candidato gli effetti della simulazione precedente.
+
+Con $H>1$, la continuazione della riga $i$ parte dal suo stato finale previsto. Il candidato $i+1$ riparte invece sempre dalla stessa fotografia iniziale $x_k$. Questa distinzione evita di confondere l'avanzamento lungo una previsione con il confronto tra previsioni alternative.
+
+Se si genera una rete ridotta per ciascun candidato, non si devono ricreare otto risorse libere quando alcune sono impegnate. Al confine tra batch completamente conclusi si possono riutilizzare i moduli di missione aggiornando le posizioni; durante un batch occorre trasferire anche token occupati, eventi pendenti e tempi residui.
+
+\subsection{Operatore unico e registro degli ordini}
+
+Il rilascio del token alla fine di una missione significa che l'operatore è libero per un nuovo lavoro. Non significa che l'ordine possa essere affidato a un altro operatore. Il vincolo tra ordine e risorsa deve sopravvivere al rilascio del token.
+
+La funzione \texttt{createOrderRegistry.m}, presente nel progetto, prepara i seguenti campi:
+\begin{itemize}
+    \item \texttt{assignedOperator}: operatore associato all'ordine;
+    \item \texttt{status}: stato dell'ordine;
+    \item \texttt{completedMissionCount}: numero di missioni completate;
+    \item \texttt{firstStartSeconds}: istante del primo avvio;
+    \item \texttt{completionSeconds}: istante di completamento dell'ordine;
+    \item \texttt{maxDurationSeconds}: durata massima, se specificata.
+\end{itemize}
+La loro inizializzazione non impone ancora il vincolo durante lo scatto delle transizioni: devono essere letti e aggiornati dal motore operativo.
+
+Per ogni avvio della missione $j$ dell'ordine $o$, si verifica che la risorsa sia quella registrata per $o$. Se l'assegnazione non è ancora impegnata, viene fissata secondo la politica scelta. Al primo avvio si registra $S_o$; per una durata massima presente si determina la scadenza $S_o+D_o$. Ai completamenti si aggiornano i conteggi e si chiude l'ordine solo quando sono terminate tutte le sue missioni.
+
+Per esempio, $A_1$ viene eseguita dall'operatore 3 nel batch $k+1$ e $A_2$ resta per $k+2$. Dopo $A_1$, il token della risorsa 3 torna disponibile, ma il registro conserva l'associazione $A\mapsto3$. Un candidato che assegni $A_2$ all'operatore 5 deve essere scartato, anche se la rete di base considera quella risorsa compatibile.
+
+\subsection{Previsione e impianto simulato}
+
+La stessa logica di rete può servire per predire e per simulare l'esecuzione, mantenendo però stati separati. La previsione usa le durate stimate disponibili; l'impianto simulato realizza i disturbi. Il predittore non deve conoscere in anticipo le durate effettive future.
+
+Dopo il confronto, alla rete operativa si passa \textbf{il programma del candidato scelto}, non la sua marcatura finale prevista. La rete esegue quel programma e genera i completamenti effettivi. Solo queste osservazioni aggiornano lo stato operativo da cui riparte l'MPC.
+
+\subsection{Interfaccia proposta e modifiche necessarie}
+
+Una possibile interfaccia concettuale è
+\[
+    (\widehat x_f,\mathrm{eventi},\mathrm{indicatori},\mathrm{esito})
+      =\operatorname{simulaCPN}(x_k,u,\mathrm{modelloTempi}).
+\]
+
+Non è una funzione già disponibile. L'esito deve distinguere completamento del candidato, arresto a un limite temporale, blocco e budget esaurito. Se restano missioni richieste, l'assenza di una transizione avviabile non implica necessariamente la fine: potrebbe esserci un completamento futuro nella lista eventi. Un blocco si segnala quando il lavoro non può progredire con il programma e gli eventi disponibili.
+
+\texttt{coloredPetri.m} oggi inizializza variabili interne a ogni chiamata e restituisce schedule, batch, posizioni e missioni non svolte. Per l'uso predittivo online va reso capace di ricevere e restituire anche lo stato riprendibile e un programma esplicito. L'elenco \texttt{notDoneMissions} non sostituisce lo stato delle missioni eventualmente in corso.
+
+L'ordine pratico degli interventi è quindi: rendere esplicito lo stato del simulatore; introdurre il filtro MPC sugli avvii; collegare il registro ordini; separare aggiornamenti previsti ed effettivi; infine aggiungere il ciclo che simula e confronta gli $n$ candidati. I file del simulatore non vengono modificati da questo documento.
+
+Prima di valutare i miglioramenti sui tempi, si devono controllare quattro proprietà: simulare due volte lo stesso candidato dallo stesso stato produce lo stesso esito nominale; invertire l'ordine delle prove non cambia i loro risultati; un ordine mantiene l'operatore anche attraversando più batch; interrompere e riprendere la simulazione produce gli stessi eventi di un'esecuzione continua, a decisioni e disturbi fissati.
+
+\section{Procedura da implementare}
+
+\begin{enumerate}
+    \item Acquisire lo stato $x_k$ e separare missioni disponibili, completate e già impegnate.
+    \item Generare fino a $n$ sottoinsiemi distinti di cardinalità $b_k$, mescolando missioni residue senza violare le precedenze.
+    \item Per ogni sottoinsieme costruire una sequenza eseguibile e le assegnazioni consentite.
+    \item Simulare ciascun programma dalla stessa situazione iniziale; se $H>1$, aggiungere una continuazione dal suo residuo.
+    \item Controllare vincoli, deadline, durate, utilizzo delle risorse e lavoro lasciato fuori.
+    \item Conservare il candidato ammissibile con il punteggio migliore entro il budget di calcolo.
+    \item Verificare che lo stato sia ancora coerente al momento dell'applicazione ed eseguire soltanto il batch scelto per $k+1$.
+    \item Aggiornare lo stato con i risultati effettivi e ripetere per $k+2$.
+\end{enumerate}
+
+$n$, $b$ e $H$ sono parametri distinti: più candidati esplorano più combinazioni; batch più grandi impegnano più lavoro prima del feedback; un orizzonte più lungo valuta conseguenze più lontane. Tutti incidono sul tempo di calcolo, che deve essere misurato e incluso nella valutazione dei tempi operativi.
+
+Se nessun candidato risulta ammissibile, non si conclude automaticamente che il problema sia impossibile: potrebbe essere fallita soltanto la ricerca limitata. Occorre distinguere questa situazione da un vincolo realmente irrealizzabile o da un budget esaurito, conservando gli impegni e segnalando l'eventuale recupero necessario.
+
+Il risultato da verificare sperimentalmente è se \textbf{selezionare e sequenziare mini-batch alternativi dal residuo} migliori i tempi e l'uso delle otto risorse rispetto al piano non aggiornato, mantenendo tutti i vincoli degli ordini.
+
+\begin{thebibliography}{9}
+\bibitem{Parlato}
+Ettore Parlato, \textit{Model Generation for the Optimization of Logistics Systems}, tesi di laurea magistrale in Computer Engineering: Automation and Control Systems, Universit\`a degli Studi di Salerno, a.a. 2021/2022. Relatore: Francesco Basile. Documento fornito: \texttt{Tesi\_Magistrale\_Parlato\_Ettore-2.pdf}.
+\bibitem{Rotondo}
+Antonio Rotondo, \textit{Efficient Optimization of Logistics Systems by Simulation}, tesi di laurea magistrale in Computer Engineering: Automation and Control Systems, Universit\`a degli Studi di Salerno, a.a. 2021/2022. Relatore: Francesco Basile. Documento fornito: \texttt{Rotondo\_Antonio\_thesis-1.pdf}.
+\end{thebibliography}
+
+\end{document}

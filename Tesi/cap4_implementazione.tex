@@ -1,0 +1,545 @@
+% Capitolo implementativo aggiornato al 23 settembre 2026.
+% Da includere nel documento principale. Nessuna compilazione eseguita.
+
+Il presente capitolo descrive la realizzazione in MATLAB del sistema
+progettato nel capitolo precedente. L'attenzione è rivolta all'organizzazione
+del software, alle strutture dati e alle modifiche introdotte per correggere
+le coordinate, rendere raggiungibili le destinazioni e ridurre i tempi di
+calcolo. I listing riportano estratti delle operazioni principali; non
+costituiscono programmi autonomi quando omettono i controlli circostanti.
+
+Il flusso corrente assegna gli ordini prima dell'esecuzione e mantiene
+un unico stato temporale. Le finestre organizzano l'osservazione di una
+dinamica per eventi: non generano nuove assegnazioni e non ricostruiscono
+la rete a ogni chiamata.
+
+\section{Organizzazione del software}
+\label{sec:impl-organizzazione}
+
+Il punto di ingresso è \texttt{main.m}. La cartella \texttt{importExcel}
+contiene la lettura dei dati; \texttt{utility} comprende preparazione,
+ordinamento, storici e grafici. Le funzioni di compatibilità, assegnazione
+e generazione delle matrici sono in \texttt{modelGeneration}; quelle
+spaziali in \texttt{pathPlan}. La cartella \texttt{temporal} contiene
+inizializzazione, avanzamento e riepilogo, mentre \texttt{tests} raccoglie
+le verifiche.
+
+Nel repository rimangono anche moduli della precedente esecuzione per batch.
+La loro presenza non implica che vengano richiamati dal programma principale:
+il flusso attuale utilizza il gestore temporale e le matrici generate per
+l'insieme delle missioni ammesse.
+
+\subsection{Configurazione e ciclo principale}
+
+\begin{lstlisting}[language=Matlab,caption={Configurazione corrente del simulatore.},label={lst:impl-parametri}]
+numberOfResources = 8;
+missionTimeLimit = 180;
+windowDuration = 15*60;
+maxT = 8*3600;
+showPlots = true;
+\end{lstlisting}
+
+Lo script importa \texttt{1su11.xlsx}, costruisce la mappa dalle immagini,
+prepara le missioni e assegna gli ordini. Inizializza quindi il pianificatore
+A* e lo stato temporale. I percorsi dei file sono costruiti rispetto alla
+cartella dello script.
+
+\begin{lstlisting}[language=Matlab,caption={Avanzamento sullo stesso stato persistente.},label={lst:impl-ciclo}]
+tic;
+while any(ismember(simulationState.Missions.Status, ...
+        ["pending","running"]))
+    simulationState = advanceTemporalSimulation( ...
+        simulationState, ...
+        simulationState.Clock + windowDuration, ...
+        planner, occupancyMatrix);
+end
+totalElapsedTime = toc;
+\end{lstlisting}
+
+\texttt{totalElapsedTime} misura il ciclo sul computer, escludendo la
+preparazione precedente e i grafici finali. Il tempo simulato è invece
+conservato in \texttt{Clock}. \texttt{maxT} è utilizzato nel riepilogo,
+non nella condizione di prosecuzione del ciclo.
+
+\section{Importazione e preparazione delle missioni}
+\label{sec:impl-importazione}
+
+\texttt{importFromExcel} normalizza le intestazioni eliminando gli spazi
+esterni e convertendole in maiuscolo. Per l'ordine cerca, in sequenza,
+\texttt{ID\_ORDER}, \texttt{OID\_ORDER} e \texttt{CD\_ORDER}, usando la
+prima colonna disponibile. Il risultato viene esposto internamente come
+\texttt{ID\_ORDER}; non vengono combinati valori di colonne differenti.
+Questa gestione conserva l'informazione anche quando l'esportazione usa
+\texttt{OID\_ORDER}.
+
+Gli identificativi vengono convertiti in stringhe e i valori mancanti
+normalizzati a stringhe vuote. In assenza di una colonna riconosciuta viene
+emesso un avviso e le missioni sono trattate come indipendenti. La priorità
+proviene da \texttt{NM\_PRIORITY}, con valore predefinito 1 per gli elementi
+mancanti o per l'intera colonna assente.
+
+\subsection{Identità e ordinamento stabile}
+
+\texttt{defineMissions} costruisce la tabella con codice, priorità,
+coordinate FROM e TO, ordine e \texttt{missionUid}. L'UID identifica la
+riga di origine, resta invariato dopo ordinamento e filtraggio e deve essere
+univoco. Il codice commerciale può invece ripetersi senza accorpare attività
+distinte.
+
+Le coordinate sono contenute nelle sottotabelle \texttt{missionFrom}
+e \texttt{missionTo}. \texttt{groupMissionsByOrder} raggruppa gli ordini
+secondo la prima comparsa, assegna gruppi distinti alle missioni senza ordine
+e ordina mediante gruppo, priorità negativa e posizione originale. Si
+ottiene così una priorità decrescente interna all'ordine con parità stabili.
+
+\subsection{Correzione delle coordinate esterne}
+
+Prima della validazione resta attiva l'euristica che divide per 1000 e
+arrotonda le coordinate superiori a 999. Questa regola è legata alla
+rappresentazione dei dati disponibili e non è una conversione universale
+delle unità. Successivamente i valori finiti esterni vengono proiettati
+entro i limiti della mappa.
+
+\begin{lstlisting}[language=Matlab,caption={Estratto della proiezione delle coordinate.},label={lst:impl-coordinate}]
+limits = [maxX maxY maxX maxY];
+for k = 1:numel(coordinateNames)
+    values = workFlow.(coordinateNames{k});
+    outside = isfinite(values) & ...
+        (values < 1 | values > limits(k));
+    values(outside) = min(max(values(outside),1),limits(k));
+    workFlow.(coordinateNames{k}) = values;
+end
+\end{lstlisting}
+
+La modifica interessa le coordinate operative in memoria, senza riscrivere
+l'Excel. Un contatore segnala le missioni corrette. Le coordinate non finite
+rimangono invalide e le righe corrispondenti sono conservate in
+\texttt{discardedMissions}.
+
+Sul file corrente sono state verificate 1105 righe: la validazione precedente
+ne escludeva 120 per superamento dei limiti; la proiezione recupera quelle
+120 e ammette tutte le 1105 nella preparazione. Questa verifica non equivale
+al completamento di tutte le missioni.
+
+\section{Assegnazione iniziale e matrici della rete}
+\label{sec:impl-assegnazione}
+
+\texttt{defineAttitude} definisce i limiti delle risorse e
+\texttt{assignMission} ne valuta la compatibilità con ciascuna missione.
+\texttt{assignOrders} interseca gli insiemi compatibili per tutte le
+missioni dell'ordine e sceglie il proprietario con il minor numero di
+missioni già assegnate.
+
+\begin{lstlisting}[language=Matlab,caption={Estratto della scelta della risorsa proprietaria.},label={lst:impl-owner}]
+candidates = 1:numberOfResources;
+for k = rows'
+    candidates = intersect(candidates,eligible{k});
+end
+% Prima della scelta viene controllata l'assenza di candidati.
+[~,leastLoaded] = min(load(candidates));
+owner = candidates(leastLoaded);
+missions.assignedResource(rows) = owner;
+load(owner) = load(owner) + numel(rows);
+\end{lstlisting}
+
+Un insieme vuoto di candidati produce un errore. A parità di carico prevale
+l'indice minore. La tabella restituita registra ordine, risorsa e cardinalità;
+la scelta non viene ricalcolata durante l'avanzamento sulla base dei tempi
+accumulati.
+
+\texttt{generateMatrices} costruisce tre transizioni e due posti interni
+per missione, oltre al posto comune delle risorse. Per le missioni successive
+dello stesso ordine aggiunge posti di collegamento e rimuove il rilascio
+e il nuovo prelievo intermedi dal posto comune. La risorsa mantiene quindi
+il proprio colore lungo la sequenza.
+
+Le matrici sono generate inizialmente in forma densa e convertite in forma
+sparsa nell'inizializzazione temporale. La marcatura ha una colonna per
+risorsa; all'inizio ogni colore possiede un token nel posto comune.
+L'abilitazione confronta la marcatura del colore con gli ingressi della
+transizione, mentre lo scatto sottrae gli ingressi e aggiunge le uscite.
+L'ottimizzazione spaziale descritta in seguito non modifica il costo di
+costruzione delle matrici della rete.
+\section{Stato persistente e avanzamento temporale}
+\label{sec:impl-stato}
+
+\texttt{initializeTemporalSimulation} crea la struttura con missioni,
+ordini, matrici, marcatura, percorsi e storici. Nella tabella delle missioni
+sono aggiunti \texttt{Status}, \texttt{StartTime},
+\texttt{ScheduledFinish}, \texttt{FinishTime}, \texttt{Duration},
+\texttt{RemainingTime} e \texttt{FailureReason}. Le missioni ammesse
+iniziano in stato \texttt{pending}, quelle escluse in \texttt{excluded}.
+Le escluse rimangono nel rendiconto ma non creano sottoreti operative.
+
+La tabella degli ordini mantiene proprietario, conteggi, budget, deadline,
+completamento e ritardo. Le chiavi logiche distinguono anche le missioni
+senza ordine. \texttt{Plans} conserva i percorsi; \texttt{ResourcePos}
+le posizioni delle risorse, inizialmente non definite. \texttt{Events}
+registra tempo, UID, risorsa, transizione e tipo di evento.
+\texttt{Windows} raccoglie gli estremi delle finestre, le missioni avviate,
+completate, fallite e ancora in esecuzione, con i relativi residui.
+
+\subsection{Avvii e completamenti}
+
+\texttt{advanceTemporalSimulation} completa anzitutto le missioni il cui
+termine programmato è maturato all'orologio corrente. Aggiorna marcatura,
+storico e posizione delle risorse. Se non è stato raggiunto il limite della
+finestra, cerca per ciascuna risorsa la prima missione pendente abilitata e
+ne tenta la pianificazione. Un percorso valido determina l'avvio:
+
+\begin{lstlisting}[language=Matlab,caption={Registrazione dei tempi all'avvio della missione.},label={lst:impl-avvio}]
+state.Missions.Status(row) = "running";
+state.Missions.StartTime(row) = state.Clock;
+state.Missions.Duration(row) = planResult.Time;
+state.Missions.ScheduledFinish(row) = ...
+    state.Clock + planResult.Time;
+\end{lstlisting}
+
+L'orologio passa poi al minimo tra il prossimo completamento e il limite
+della finestra. Non viene effettuata un'attesa proporzionale ai secondi
+simulati. Un completamento esattamente al confine viene registrato; la
+chiamata successiva riprende dallo stesso istante, senza aggiungere un
+ritardo artificiale al nuovo avvio.
+
+Se non restano missioni in corso ma sono presenti missioni assegnate non
+abilitabili, viene generata un'asserzione di deadlock. Lo stato
+\texttt{blocked} è previsto nei riepiloghi, ma non viene attribuito
+automaticamente da questa gestione. Al termine dell'avanzamento vengono
+aggiornati ordini, residui e finestra e viene verificata la conservazione
+di un token per risorsa.
+
+\subsection{Budget e deadline}
+
+Il budget ordinario è il numero di missioni dell'ordine moltiplicato per
+\texttt{missionTimeLimit}, includendo anche le righe escluse conservate
+nel rendiconto. La tabella \texttt{orderDurationOverrides}, con colonne
+\texttt{OrderId} e \texttt{MaxDuration}, può sostituire il budget di un
+ordine. Valori non positivi o non finiti e override duplicati sono respinti.
+La deadline è fissata soltanto al primo avvio:
+
+\begin{lstlisting}[language=Matlab,caption={Definizione della deadline all'avvio effettivo.},label={lst:impl-deadline}]
+if isnan(state.Orders.StartTime(o))
+    state.Orders.StartTime(o) = state.Clock;
+    state.Orders.Deadline(o) = ...
+        state.Clock + state.Orders.MaxDuration(o);
+end
+\end{lstlisting}
+
+\texttt{refreshTemporalOrders} considera completo un ordine soltanto
+quando tutte le missioni sono completate. La presenza di missioni fallite,
+escluse o bloccate lo rende incompleto; negli altri casi distingue ordine
+aperto e non avviato. Il ritardo usa il completamento finale oppure, per
+ordini non conclusi con deadline definita, l'orologio corrente.
+
+\texttt{summarizeTemporalSimulation} conta missioni e ordini per stato,
+ordini puntuali e in ritardo e missioni oltre il riferimento nominale.
+L'indicatore di completamento entro il turno richiede sia tutti gli ordini
+completati sia l'orologio entro \texttt{maxT}. Questi controlli valutano
+il risultato e non troncano le esecuzioni.
+
+\section{Mappa, coordinate e pianificazione}
+\label{sec:impl-percorsi}
+
+\texttt{computeMap} legge le immagini del layout. Per immagini a colori
+seleziona il canale verde; i pixel diversi da 255 diventano ostacoli.
+La mappa binaria corrente ha dimensioni nominali $50.2\times95.1$ e
+risoluzione 10, producendo una griglia $951\times502$. La formula temporale
+non utilizza direttamente queste dimensioni fisiche, ma il numero di punti
+del percorso.
+
+\subsection{Indici ai bordi della griglia}
+
+\texttt{scalePoints} arrotonda le coordinate e inverte Y. La formula
+precedente produceva indice zero quando Y coincideva con il massimo;
+la correzione è l'aggiunta dell'unità richiesta dagli indici MATLAB:
+
+\begin{lstlisting}[language=Matlab,caption={Conversione corretta delle coordinate operative.},label={lst:impl-indici}]
+startPoint = [round(startP(1)), ...
+    round(mapSize(2) + 1 - startP(2))];
+endPoint = [round(endP(1)), ...
+    round(mapSize(2) + 1 - endP(2))];
+\end{lstlisting}
+
+Y uguale a 502 diventa così colonna 1. Il problema era emerso anche nella
+missione 6004972 dopo la proiezione preliminare sul bordo.
+\texttt{pathPlanning} verifica comunque che posizione della risorsa,
+FROM e TO siano finiti, interi e interni alla mappa.
+
+\subsection{Estremi raggiungibili e continuità}
+
+Il pianificatore legge la propria matrice di occupazione e ne confronta le
+dimensioni con quelle fornite. La connettività dipende dalla proprietà
+\texttt{DiagonalSearch}. Una risorsa senza posizione precedente viene
+collocata al FROM iniziale; una posizione occupata è riportata alla cella
+libera più vicina. Un FROM occupato è corretto nella componente raggiungibile
+dalla risorsa. Se il FROM è libero ma isolato, l'avvicinamento può fallire.
+
+La prima chiamata ad A* calcola il percorso dalla risorsa al FROM; il suo
+ultimo punto diventa il FROM effettivo. Il TO è poi ricercato nella stessa
+componente anche quando la cella richiesta è libera:
+
+\begin{lstlisting}[language=Matlab,caption={Estratto della correzione del TO e della seconda tratta.},label={lst:impl-to}]
+fromPoint = path(end,:);
+toPoint = findNearestZero( ...
+    plannerMatrix,toPoint,fromPoint,connectivity);
+% Il codice verifica che toPoint non sia vuoto.
+secondPath = plan(planner,fromPoint,toPoint);
+\end{lstlisting}
+
+La precedente correzione condizionata alla sola occupazione non gestiva i
+TO liberi ma isolati. Nella prova della missione 6003316, UID 1037, il TO
+$[905,502]$ è stato sostituito con $[905,499]$, espresso come riga e colonna.
+Il percorso è diventato realizzabile e la durata della prova è risultata
+208 s. La risorsa era inizialmente presso il FROM; in una sequenza completa
+un diverso avvicinamento può modificare tale durata.
+
+\subsection{Formula della durata}
+
+Le due tratte vengono concatenate e il tempo viene stimato dal numero
+di punti risultante:
+
+\begin{lstlisting}[language=Matlab,caption={Durata simulata del percorso concatenato.},label={lst:impl-durata}]
+path = [path;secondPath];
+timePath = size(path,1)/5.5;
+time = round(timePath + timePath*0.2) + 60;
+\end{lstlisting}
+
+Il conteggio include il punto comune nella concatenazione e non distingue
+la lunghezza dei passi diagonali. I coefficienti e il contributo fisso di
+60 s sono parte del modello empirico e richiedono calibrazione per una
+corrispondenza fisica. Non vengono modellate collisioni spazio-temporali
+tra i mezzi: la mappa usata da A* contiene ostacoli statici.
+
+\section{Fallimenti e aggiornamento delle risorse}
+\label{sec:impl-fallimenti}
+
+Un errore sugli estremi, l'assenza di celle utilizzabili o una tratta
+irrealizzabile producono una tabella di pianificazione vuota. Il gestore
+assegna \texttt{failed} e registra l'evento. Per proseguire, sottrae dalla
+marcatura gli ingressi della transizione iniziale e aggiunge le uscite
+della transizione finale del ramo fallito. Il token resta riservato se
+seguono missioni dell'ordine e torna al posto comune al termine della sequenza.
+Non vengono aggiornati posizione o lavoro accumulato per una missione fallita.
+
+\texttt{updateBatch} interviene al completamento riuscito: aggiorna tempo,
+codici missione, ordini e priorità nello storico e pone la risorsa
+nell'ultima cella del percorso. Il gestore aggiunge anche gli UID, preservando
+l'identità delle occorrenze con codici uguali.
+
+\texttt{selectedBatch} espone lo storico per risorsa, non una nuova
+configurazione scelta mediante funzione di costo. Le tabelle finali delle
+missioni fallite e bloccate sono estrazioni della cronologia temporale.
+\section{Diagnostica grafica dei percorsi falliti}
+\label{sec:impl-diagnostica}
+
+La firma di \texttt{pathPlanning} comprende un secondo output diagnostico
+con i campi \texttt{Reason}, \texttt{Start}, \texttt{From}, \texttt{To},
+\texttt{RequestedFrom} e \texttt{RequestedTo}. Il gestore lo conserva
+nel campo \texttt{PathDiagnostics}, associandolo alla riga della missione.
+Il motivo generale nella tabella rimane \texttt{no\_feasible\_path};
+la struttura aggiuntiva distingue invece la causa specifica.
+
+La diagnostica viene prodotta anche per una pianificazione riuscita.
+In questo contesto il motivo \texttt{completed} indica il successo del
+calcolo del percorso, non il completamento temporale della missione, che
+passa prima a \texttt{running}. I punti richiesti sono già indici della
+griglia e possono aver subito la proiezione iniziale: non sono una copia
+delle coordinate grezze dell'Excel.
+
+\texttt{plotFailedMissionPaths} filtra le missioni fallite e apre una
+finestra con menu di selezione per codice, UID e ordine. Mostra gli ostacoli,
+il FROM verde, il TO rosso e la posizione della risorsa blu, distinguendo
+estremi richiesti ed effettivi. L'asse orizzontale rappresenta la colonna,
+quello verticale la riga. I segmenti tratteggiati sono collegamenti
+indicativi e non percorsi validati.
+
+In assenza della diagnostica dettagliata vengono mostrati soltanto i punti
+richiesti, segnalando la limitazione. Se non esistono missioni fallite,
+la funzione non crea una figura. Il richiamo è integrato nei grafici finali
+del programma principale.
+
+\section{Statistiche delle durate e fasce temporali}
+\label{sec:impl-statistiche}
+
+Il file separato \texttt{calcolaTempiMissioni.m} analizza una simulazione
+già disponibile, selezionando le sole missioni completate con durata
+finita e non negativa:
+
+\begin{lstlisting}[language=Matlab,caption={Filtro delle durate utilizzate nell'analisi.},label={lst:impl-filtro}]
+valide = string(missionTimeline.Status)=="completed" & ...
+    isfinite(missionTimeline.Duration) & ...
+    missionTimeline.Duration>=0;
+durate = missionTimeline.Duration(valide);
+\end{lstlisting}
+
+La funzione restituisce conteggi, minimo, media, mediana e massimo, in
+secondi e minuti. La colonna \texttt{MissioniEscluse} conta tutte le righe
+non usate nell'analisi; non coincide necessariamente con lo scarto preliminare
+in \texttt{discardedMissions}. I codici duplicati non vengono accorpati.
+
+Il secondo output \texttt{fasce} riporta estremi e conteggi degli intervalli.
+L'ampiezza predefinita è 30 s ed è personalizzabile. Il bordo superiore
+complessivo è posto oltre il massimo osservato; una durata su un confine
+interno appartiene alla fascia successiva. Il grafico a barre comprende
+etichette, conteggi e fasce intermedie vuote.
+
+\begin{lstlisting}[language=Matlab,caption={Analisi con fasce di trenta secondi.},label={lst:impl-statistiche}]
+[statistiche, fasce, figura] = ...
+    calcolaTempiMissioni(missionTimeline,30);
+\end{lstlisting}
+
+Senza durate valide le statistiche valgono \texttt{NaN}, la tabella delle
+fasce è vuota e non viene creata una figura. L'analisi può guidare la scelta
+del budget, ma non modifica automaticamente le deadline.
+
+\section{Ottimizzazione delle componenti raggiungibili}
+\label{sec:impl-cache}
+
+\subsection{Costo della ricerca precedente}
+
+La versione precedente di \texttt{findNearestZero} ricostruiva la componente
+raggiungibile con una visita in ampiezza a ogni chiamata vincolata a un
+riferimento. Dopo l'estensione del controllo del TO a tutte le missioni,
+la stessa regione della mappa era esplorata ripetutamente. L'ottimizzazione
+ha riguardato questa operazione, distinta dal calcolo dei percorsi A*.
+
+\subsection{Dati persistenti e invalidazione}
+
+La funzione conserva la maschera delle celle libere, la connettività,
+le etichette delle componenti e le coordinate dei loro punti. La cache
+viene invalidata quando cambia la connettività o la maschera:
+
+\begin{lstlisting}[language=Matlab,caption={Estratto dell'invalidazione della cache spaziale.},label={lst:impl-cache}]
+persistent cachedFree cachedConnectivity ...
+    componentLabels componentPoints
+
+if isempty(cachedConnectivity) || ...
+        cachedConnectivity ~= connectivity || ...
+        ~isequal(cachedFree,free)
+    cachedFree = free;
+    cachedConnectivity = connectivity;
+    componentLabels = zeros(mapSize,'uint32');
+    componentPoints = cell(0,1);
+end
+\end{lstlisting}
+
+Viene conservata soltanto la mappa più recente. Il confronto rileva anche
+cambiamenti degli ostacoli a dimensioni invariate. Variazioni numeriche in
+celle già occupate non richiedono una ricostruzione se rimane identica
+la classificazione libero/occupato.
+
+Se la cella di riferimento non è etichettata, la visita in ampiezza esplora
+la sua componente e ne memorizza i punti. Le chiamate successive riutilizzano
+i dati. Un target già nella stessa componente è restituito direttamente;
+negli altri casi si calcola la distanza quadratica dai punti memorizzati.
+Le parità vengono risolte per riga e colonna, senza dipendere dall'ordine
+di visita della coda.
+
+La ricerca senza riferimento considera tutte le celle libere. Un riferimento
+occupato produce un risultato vuoto. Il confronto della maschera e la
+ricerca del minimo mantengono un costo: la cache elimina l'esplorazione
+ripetuta della componente, non ogni scansione. Non vengono memorizzati i
+percorsi A*.
+
+Per azzerare esplicitamente la cache durante una verifica si può usare
+\texttt{clear findNearestZero}. L'azzeramento delle sole variabili del
+programma principale non cancella le variabili persistenti della funzione.
+
+\section{Verifiche funzionali e prestazioni}
+\label{sec:impl-verifiche}
+
+Le verifiche sono raccolte in funzioni MATLAB nella cartella \texttt{tests}.
+Le regressioni collegate alle modifiche comprendono:
+\begin{itemize}
+    \item \texttt{testMissionPreparation}: proiezione, identità delle
+          missioni ed esclusione dei valori non finiti;
+    \item \texttt{testScalePoints}: conversione dei bordi e percorso con
+          estremi sui limiti della mappa;
+    \item \texttt{testNearestReachableZero}: distanza minima, parità,
+          connettività e TO libero ma isolato;
+    \item \texttt{testNoFeasiblePath}: fallimenti senza completamenti
+          fittizi e senza aggiornamenti impropri della posizione;
+    \item \texttt{testFailedMissionPaths}: estremi diagnostici, selezione
+          tra codici duplicati e assenza di fallimenti;
+    \item \texttt{testNearestZeroCache}: invalidazione ed equivalenza
+          rispetto a una ricerca indipendente.
+\end{itemize}
+
+Il test della cache modifica gli ostacoli a dimensione invariata, alterna
+connettività e interroga componenti differenti. Esegue anche 320 confronti
+su mappe generate con seme riproducibile. Il riferimento ricostruisce la
+raggiungibilità con espansione iterativa della maschera e applica gli stessi
+criteri di distanza e parità.
+
+Il progetto comprende inoltre test sullo stato temporale e sulla riserva
+delle risorse per ordine. La loro presenza va distinta dalla riesecuzione
+sistematica dopo ogni modifica: per la cache sono stati eseguiti il nuovo
+test e le regressioni pertinenti su celle, percorsi falliti, diagnostica
+e conversione dei bordi.
+
+\subsection{Confronto prima e dopo l'ottimizzazione}
+
+Il confronto ha utilizzato le prime venti missioni preparate dal file
+corrente, lo stesso pianificatore e una posizione iniziale non definita
+per ogni chiamata. Sono stati confrontati integralmente percorso e
+diagnostica: punti, durate e risultati sono rimasti identici. La cache
+della nuova funzione era vuota all'inizio della misura.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lr}
+\toprule
+Versione, senza profiler & Tempo per 20 missioni\\
+\midrule
+Ricerca precedente & 4.371 s\\
+Ricerca con cache inizialmente vuota & 1.674 s\\
+\bottomrule
+\end{tabular}
+\caption{Confronto sul campione usato per verificare la cache.}
+\label{tab:impl-benchmark}
+\end{table}
+
+Il rapporto dei tempi è circa $2.61$. La misura riguarda soltanto il campione
+di pianificazione e non l'intera simulazione con risorse aggiornate lungo
+la sequenza. Non è quindi un fattore garantito per il programma completo.
+
+Una misura precedente con profiler attribuiva alla ricerca delle celle
+circa 72.7 s su 74.4 s totali sul campione. Il profiler introduce overhead
+rilevante nei cicli con molte chiamate: tali valori non sono direttamente
+confrontabili con la Tabella~\ref{tab:impl-benchmark}. Il risultato utile
+è la riduzione del lavoro ripetuto senza variazioni degli esiti.
+
+\section{Risultati disponibili e uso del sistema}
+\label{sec:impl-risultati}
+
+Al termine dello script, \texttt{missionTimeline} e \texttt{orderTimeline}
+espongono le cronologie delle attività e degli ordini.
+\texttt{transitionEvents} raccoglie gli eventi e \texttt{executiveSummary}
+il riepilogo. \texttt{miniBatchHistory} corrisponde alla tabella delle
+finestre: il nome non indica un algoritmo di costruzione di batch con
+cardinalità minima e massima.
+
+Con \texttt{showPlots} attivo vengono mostrati sequenza per risorsa,
+tempi e deadline e diagnostica dei fallimenti. La distribuzione delle
+durate si ottiene con il richiamo separato alla funzione delle statistiche.
+
+\begin{lstlisting}[language=Matlab,caption={Sequenza di utilizzo dopo la configurazione.},label={lst:impl-utilizzo}]
+main
+[statistiche, fasce, figura] = ...
+    calcolaTempiMissioni(missionTimeline,30);
+
+% Per riaprire la diagnostica:
+plotFailedMissionPaths(simulationState,occupancyMatrix);
+\end{lstlisting}
+
+Per cambiare il budget nominale si modifica \texttt{missionTimeLimit}
+e si riesegue la simulazione; gli override restano specifici per ordine.
+La durata della finestra controlla la frequenza delle osservazioni e non
+introduce una riassegnazione del lavoro.
+
+Le strutture dati mantengono distinte preparazione, fattibilità geometrica,
+esecuzione e valutazione del servizio. Una riga recuperata dalla proiezione
+non è automaticamente una missione completata; una pianificazione riuscita
+non è ancora un evento di completamento; l'esaurimento del lavoro operativo
+può lasciare un ordine incompleto. Tale separazione permette di interpretare
+correttamente gli indicatori e i grafici prodotti.

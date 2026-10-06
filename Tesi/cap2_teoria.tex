@@ -303,7 +303,357 @@ of standard Petri Nets in representing concurrency, synchronization, and resourc
 conflicts. This makes them particularly suitable for resource-allocation and
 scheduling problems involving a large number of simultaneous warehouse operations.
 
-\section{Mixed-Integer Linear Programming}
+%\section{Mixed-Integer Linear Programming}
 
+\section{Scheduling basics}
+\label{sec:scheduling-basics}
 
-\section{Model Predictive Control}
+Scheduling concerns the allocation of a set of activities to a limited set of
+resources and the definition of their execution over time. In its classical
+formulation, a scheduling problem specifies the activities to be processed, the
+resources that can execute them, the technological or precedence constraints,
+and one or more performance criteria used to evaluate the resulting schedule.
+
+In the warehouse problem considered in this work, the natural scheduling unit is
+not the single mission alone, but the \textit{order}. An order groups several
+missions that belong to the same logical request and must preserve a common
+resource ownership during their execution. Let
+
+\begin{equation}
+	\mathcal{O}=\{1,2,\ldots,N_O\}
+\end{equation}
+
+\noindent be the set of orders and let
+
+\begin{equation}
+	\mathcal{M}_o=\{m_{o,1},m_{o,2},\ldots,m_{o,n_o}\}
+\end{equation}
+
+\noindent denote the set of missions belonging to order $o$, where $n_o$ is the
+number of missions contained in that order. The available resources are denoted
+by
+
+\begin{equation}
+	\mathcal{R}=\{1,2,\ldots,N_R\}.
+\end{equation}
+
+The problem can therefore be interpreted as a parallel-resource scheduling
+problem with eligibility constraints, grouped operations, and limited resource
+capacity. At most one activity can use the same resource at a given instant, and
+an order can be assigned only to a resource that is compatible with all of its
+missions.
+
+\subsection{Eligibility constraints and order-level assignment}
+
+Not every resource is necessarily able to execute every mission. For each
+mission $m$, let $\mathcal{R}_m\subseteq\mathcal{R}$ be the set of resources that
+satisfy the required compatibility conditions. Since all missions belonging to
+the same order must preserve the same owner, the resources admissible for the
+whole order are obtained by intersecting the eligibility sets of its missions:
+
+\begin{equation}
+	\mathcal{R}_o
+	=
+	\bigcap_{m\in\mathcal{M}_o}\mathcal{R}_m.
+	\label{eq:order-eligible-resources}
+\end{equation}
+
+\noindent If $\mathcal{R}_o=\varnothing$, the order cannot be assigned without violating
+at least one compatibility requirement. Otherwise, the assignment decision can
+be represented by the binary variable
+
+\begin{equation}
+	x_{or}=\begin{cases}
+		1, & \text{if order }o\text{ is assigned to resource }r,\\
+		0, & \text{otherwise.}
+	\end{cases}
+\end{equation}
+
+\noindent The unique-assignment constraint is then
+
+\begin{equation}
+	\sum_{r\in\mathcal{R}_o}x_{or}=1,
+	\qquad \forall o\in\mathcal{O},
+	\label{eq:unique-order-assignment}
+\end{equation}
+
+\noindent with $x_{or}=0$ for every $r\notin\mathcal{R}_o$. Consequently, if resource
+$r$ is selected for order $o$, the same assignment is inherited by all missions
+$m\in\mathcal{M}_o$. This differs from a mission-by-mission allocation, in which
+the missions of the same order could be distributed among different resources.
+The order-level constraint preserves operational continuity and is consistent
+with the token reservation mechanism represented by the Colored Petri Net.
+
+\subsection{Greedy load balancing and list scheduling}
+
+A complete combinatorial optimization of all possible order--resource
+associations can become expensive as the number of orders grows. A common
+alternative is a \textit{list-scheduling} heuristic: orders are considered
+sequentially and each order is assigned using the information available at that
+step.
+
+Let $L_r$ denote the workload already assigned to resource $r$. In the simplest
+case, when no reliable processing-time estimate is yet available, the workload
+can be approximated by the number of missions already assigned to the resource:
+
+\begin{equation}
+	L_r
+	=
+	\sum_{o\in\mathcal{O}} n_o x_{or}.
+	\label{eq:resource-load-mission-count}
+\end{equation}
+
+\noindent When a new order $o$ has to be assigned, a load-balancing rule selects the
+least-loaded compatible resource:
+
+\begin{equation}
+	r_o^{\star}
+	=
+	\arg\min_{r\in\mathcal{R}_o} L_r.
+	\label{eq:least-loaded-assignment}
+\end{equation}
+
+\noindent After the decision, the corresponding load is updated according to
+
+\begin{equation}
+	L_{r_o^{\star}}
+	\leftarrow
+	L_{r_o^{\star}}+n_o.
+\end{equation}
+
+This rule is greedy because the choice is made using the current partial
+assignment without reconsidering all previous decisions. Its purpose is not to
+guarantee a globally optimal schedule, but to avoid concentrating too many
+missions on the same resource while respecting eligibility and unique ownership.
+The rule used in this work is therefore a deterministic load-balancing heuristic
+based on mission count. More refined variants may replace $n_o$ with an
+estimated processing time, but the scheduling principle remains the same: among
+the admissible resources, new work is preferentially assigned to the resource
+with the lowest current load.
+
+A related quantity, evaluated after the simulation with actual execution times,
+is the effective workload of resource $r$:
+
+\begin{equation}
+	W_r
+	=
+	\sum_{m:\,r(m)=r} p_m,
+	\label{eq:actual-resource-workload}
+\end{equation}
+
+\noindent where $p_m$ is the actual processing time of mission $m$. This quantity measures
+how much effective work is accumulated by each resource and is therefore useful
+for evaluating load balancing. A distinct classical scheduling measure is the
+\textit{makespan}, defined as the completion time of the last completed order:
+
+\begin{equation}
+	C_{\max}=\max_{o\in\mathcal{O}} C_o.
+	\label{eq:makespan-basic}
+\end{equation}
+
+\noindent If all resources start from the same temporal origin and no idle intervals are
+introduced, $C_{\max}$ coincides with the largest accumulated resource workload;
+in the general case, waiting and idle times can make these two quantities
+different.
+
+\subsection{Non-preemptive execution and temporal quantities}
+
+The execution considered in this work is non-preemptive. Once a mission starts,
+it is allowed to continue until completion; it is not interrupted in order to
+serve another mission. Moreover, once an order is assigned to a resource, the
+owner is preserved for the entire order. Waiting may occur before the first
+mission or between missions because of resource availability, Petri-net enabling
+conditions, or path feasibility, but an active mission is not split into
+multiple execution intervals.
+
+For an order $o$, the main temporal quantities used in scheduling theory are:
+
+\begin{itemize}
+	\item $S_o$: starting time, corresponding here to the actual start of the
+	first mission of the order;
+	\item $C_o$: completion time, corresponding to the completion of the last
+	mission of the order;
+	\item $p_o$: processing time or effective duration required by the order;
+	\item $d_o$: due date or deadline associated with the order.
+\end{itemize}
+
+The flow time of the order, measured from its first actual start, is
+
+\begin{equation}
+	F_o=C_o-S_o.
+	\label{eq:order-flow-time}
+\end{equation}
+
+In a general scheduling problem, the due date $d_o$ can be given externally. In
+the present model, instead, it is constructed from an estimated duration and is
+anchored to the actual first start of the order. This choice is important because
+an order may already be assigned to a resource but remain waiting while that
+resource completes previously scheduled work.
+
+\subsection{Estimated processing time and deadline construction}
+
+The processing time of a warehouse order is strongly influenced by spatial
+information. Two orders containing the same number of missions may require very
+different travel times if their pickup and delivery points are located in
+different areas of the warehouse. For this reason, the temporal budget used to
+construct the deadline can be based on a geometric estimate of the order rather
+than only on its number of missions.
+
+Let $P_r$ denote the current position of resource $r$ when order $o$ starts, and
+let $F_i$ and $T_i$ denote the FROM and TO points of the $i$-th mission of the
+order. Using a generic geometric distance $d(\cdot,\cdot)$, an estimate of the
+travel distance associated with the complete order is
+
+\begin{equation}
+	\begin{split}
+		\widehat{D}_o ={}& d(P_r,F_1)
+		+\sum_{i=1}^{n_o} d(F_i,T_i)\\
+		&+\sum_{i=1}^{n_o-1} d(T_i,F_{i+1}).
+	\end{split}
+	\label{eq:order-geometric-distance}
+\end{equation}
+
+\noindent In the current static formulation the distance metric is Euclidean,
+
+\begin{equation}
+	d_E(p,q)
+	=
+	\sqrt{(p_x-q_x)^2+(p_y-q_y)^2}.
+	\label{eq:euclidean-distance-scheduling}
+\end{equation}
+
+\noindent The geometric distance is then converted into an estimated order duration. If
+$v$ is the nominal travelling speed, $\alpha$ is a safety margin applied to the
+travel component, $\tau_h$ is a fixed handling time per mission, and $\delta$ is
+an additional margin per mission, the estimate can be written as
+
+\begin{equation}
+	\widehat{p}_o
+	=
+	\operatorname{round}\!\left(
+	\frac{\widehat{D}_o}{v}(1+\alpha)
+	\right)
+	+n_o\tau_h
+	+n_o\delta.
+	\label{eq:estimated-order-processing-time}
+\end{equation}
+
+The estimate is not the actual execution time and does not replace path planning.
+Its role is to provide a scheduling reference from which the temporal target of
+the order can be defined. Once the first mission starts at time $S_o$, the
+absolute deadline is fixed as
+
+\begin{equation}
+	d_o=S_o+\widehat{p}_o.
+	\label{eq:relative-deadline-scheduling}
+\end{equation}
+
+This is a \textit{relative deadline}: before the order starts, an absolute due
+date is not yet available; when the first mission actually starts, the deadline
+is converted into an absolute simulation time. The value is then kept fixed for
+the remainder of the order. Recomputing it after every mission would move the
+target forward and could artificially hide delays accumulated during execution.
+
+\subsection{Lateness, tardiness and slack}
+
+The comparison between completion time and deadline is described through the
+classical concepts of \textit{lateness}, \textit{tardiness}, and \textit{slack}.
+The lateness of order $o$ is
+
+\begin{equation}
+	L_o=C_o-d_o.
+	\label{eq:order-lateness}
+\end{equation}
+
+Lateness is a signed quantity: $L_o<0$ means that the order finishes before its
+deadline, whereas $L_o>0$ means that the order finishes late. When only positive
+delay is relevant, the tardiness is used:
+
+\begin{equation}
+	T_o=\max\{0,C_o-d_o\}.
+	\label{eq:order-tardiness}
+\end{equation}
+
+The complementary measure is the slack with respect to completion:
+
+\begin{equation}
+	\sigma_o=d_o-C_o.
+	\label{eq:order-slack}
+\end{equation}
+
+Hence, a positive slack indicates residual temporal margin, a zero slack means
+that the order completes exactly at its deadline, and a negative slack indicates
+a deadline violation. Since
+
+\begin{equation}
+	\sigma_o=-L_o,
+\end{equation}
+
+\noindent the two quantities provide equivalent information with opposite sign.
+
+When the order has not yet completed, $C_o$ is not available. At a current time
+$t$, one may still observe whether the deadline has already been exceeded through
+
+\begin{equation}
+	T_o(t)=\max\{0,t-d_o\},
+\end{equation}
+
+\noindent but this value represents the current delay of an open order and should not be
+confused with the final tardiness, which is known only when the order is
+completed.
+
+\subsection{Soft deadlines and scheduling performance measures}
+
+In strict real-time scheduling, a \textit{hard deadline} is a feasibility
+constraint: completing after the deadline may make the result unacceptable. In
+this warehouse model, the deadline has a different role. Mission execution is not
+stopped when the deadline is reached and an order is not discarded simply
+because it becomes late. Therefore, although the term \textit{deadline} is used
+throughout the implementation, it behaves from a scheduling point of view as a
+\textit{soft due date} or service target.
+
+This distinction makes it possible to evaluate the quality of a schedule using
+several complementary indicators. Let
+
+\begin{equation}
+	U_o=\begin{cases}
+		1, & T_o>0,\\
+		0, & T_o=0,
+	\end{cases}
+\end{equation}
+
+\noindent identify a tardy order. The number of late orders is then
+
+\begin{equation}
+	N_{\mathrm{late}}
+	=
+	\sum_{o\in\mathcal{O}} U_o,
+	\label{eq:number-late-orders}
+\end{equation}
+
+\noindent while the total and maximum tardiness are
+
+\begin{equation}
+	T_{\mathrm{tot}}
+	=
+	\sum_{o\in\mathcal{O}}T_o,
+	\qquad
+	T_{\max}
+	=
+	\max_{o\in\mathcal{O}}T_o.
+	\label{eq:tardiness-indicators}
+\end{equation}
+
+Together with $C_{\max}$ and the distribution of the resource workloads $W_r$,
+these quantities describe two different aspects of scheduling performance. Load
+balancing measures how evenly work is distributed among the available resources,
+whereas deadline-related indicators measure the temporal quality of service
+provided to the individual orders.
+
+The scheduling logic adopted in this work is based precisely on this separation.
+The initial order assignment uses compatibility and workload information to
+obtain a feasible and reasonably balanced distribution, while the temporal layer
+records the actual start and completion times and evaluates each order against
+its frozen deadline. The Colored Petri Net subsequently enforces the execution
+constraints, concurrency, and resource ownership that make the resulting
+schedule physically consistent with the warehouse model.

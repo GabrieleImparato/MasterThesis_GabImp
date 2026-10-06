@@ -1,0 +1,16 @@
+﻿\subsection{New mini-batch subdivision}
+
+Sia $\mathcal{O}$ l'insieme degli ordini da gestire e sia $\mathcal{M}$ l'insieme delle missioni previste. A ogni ordine $o\in\mathcal{O}$ è associato il sottoinsieme $\mathcal{M}_o$ delle missioni che lo compongono. Ogni missione appartiene a un solo ordine, pertanto
+\begin{equation}
+    \mathcal{M}=\bigcup_{o\in\mathcal{O}}\mathcal{M}_o,
+    \qquad \mathcal{M}_o\cap\mathcal{M}_{o'}=\varnothing
+    \quad\text{per }o\neq o'.
+\end{equation}
+
+All'istante di osservazione $t_k$, lo stato di esecuzione determina la partizione
+\begin{equation}
+    \mathcal{M}=\mathcal{C}_k\,\dot\cup\,
+                 \mathcal{I}_k\,\dot\cup\,\mathcal{R}_k,
+\end{equation}
+dove $\mathcal{C}_k$ contiene le missioni completate, $\mathcal{I}_k$ quelle in corso e $\mathcal{R}_k$ quelle ancora da iniziare. Il simbolo $\dot\cup$ indica che i tre insiemi sono disgiunti: una missione non può appartenere contemporaneamente a più stati. Le missioni in corso costituiscono impegni da conservare e non possono essere riassegnate o avviate nuovamente durante la ripianificazione.
+

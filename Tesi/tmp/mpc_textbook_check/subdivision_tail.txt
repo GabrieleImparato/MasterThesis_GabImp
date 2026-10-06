@@ -1,0 +1,36 @@
+﻿
+La disponibilità alla selezione non coincide necessariamente con la possibilità di avvio immediato. Una missione può essere inserita nella previsione anche se la risorsa richiesta si libererà in un istante successivo, purché tale attesa sia rappresentata nella simulazione. Restano invece esclusi dalla nuova selezione gli eventuali lavori già assegnati in modo irrevocabile, anche quando non sono ancora iniziati.
+
+Per la finestra successiva si costruiscono fino a $n$ mini-batch candidati:
+\begin{equation}
+    B_{k+1}^{(i)}\subseteq\mathcal{A}_k,
+    \qquad i=1,\ldots,n.
+\end{equation}
+I candidati rappresentano alternative per la stessa decisione e possono quindi condividere alcune missioni. Ciascuno può comprendere attività appartenenti a ordini differenti, nel rispetto delle precedenze interne e dell'operatore associato a ogni ordine. Per confrontare inizialmente gruppi della stessa dimensione si può fissare una cardinalità $b$, riducendola quando il residuo è inferiore; il numero di missioni non determina comunque la durata del batch, che deve essere valutata dal simulatore.
+
+A ogni sottoinsieme vengono associate una distribuzione tra le risorse e una sequenza di esecuzione. L'MPC confronta i programmi così ottenuti a partire dallo stesso stato osservato. La CTPN conserva gli impegni già attivi e determina gli avvii e i completamenti consentiti nel tempo. Le missioni presenti soltanto nelle alternative scartate rimangono disponibili per le decisioni successive.
+
+\subsection{Deadline constraint}
+
+La gestione delle deadline deve essere coordinata con la disponibilità effettiva degli operatori. Anche supponendo di distribuire inizialmente il lavoro in modo equilibrato, le risorse possono terminare in istanti differenti a causa dei percorsi, delle durate delle missioni e degli scostamenti rispetto alle previsioni. Non è quindi necessario attendere che tutti gli operatori abbiano concluso il lavoro per consentire a una risorsa libera di avviare una nuova attività.
+
+Per ciascuna risorsa $r$ si indica con $\widehat a_{r,k}$ il primo istante previsto di disponibilità, tenendo conto della missione in corso e degli eventuali impegni già confermati. Se una nuova missione $j$ viene assegnata a tale risorsa, il suo avvio previsto $\widehat s_j$ deve rispettare
+\begin{equation}
+    \widehat s_j\geq\widehat a_{r,k}.
+\end{equation}
+L'istante di disponibilità è aggiornato durante la simulazione dopo ogni assegnazione: una stessa risorsa non può ricevere avvii sovrapposti. Il programma del mini-batch può quindi contenere attività che iniziano in momenti diversi, in funzione della disponibilità dei rispettivi operatori.
+
+Nella CTPN una risorsa impegnata è rappresentata dal proprio token colorato all'interno della sottorete della missione in esecuzione. Il token non è disponibile nel posto condiviso delle risorse libere e non può essere usato per avviare un'altra missione. Al completamento, la transizione di rilascio lo restituisce, rendendo possibili gli avvii successivi autorizzati dal programma. Non occorre cancellare il token o azzerare indiscriminatamente il suo colore nella rete: deve essere conservata l'informazione sull'attività ancora in corso.
+
+Occorre inoltre distinguere la disponibilità fisica della risorsa dall'associazione con un ordine. Il token viene rilasciato al completamento della singola missione; l'associazione tra ordine e operatore rimane invece valida fino alla conclusione dell'intero ordine. Riservare l'operatore esclusivamente a un ordine fino alla sua chiusura sarebbe un vincolo aggiuntivo. Nella formulazione che ammette l'alternanza tra ordini, una nuova attività può essere avviata solo se non compromette il completamento degli ordini già iniziati entro i rispettivi limiti.
+
+Per un ordine $o$ già avviato, la verifica temporale conserva l'istante effettivo $S_o$ e la durata massima $D_o$:
+\begin{equation}
+    \widehat C_o\leq d_o,
+    \qquad d_o=S_o+D_o.
+\end{equation}
+Il completamento previsto $\widehat C_o$ deve comprendere tutte le missioni residue dell'ordine, incluse quelle eventualmente collocate oltre la finestra corrente. L'attesa causata dall'inserimento di altre attività contribuisce alla durata dell'ordine. Rendere indisponibili le risorse occupate garantisce quindi il rispetto della capacità, ma non basta a garantire la deadline: quest'ultima richiede una verifica separata del programma previsto.
+
+Per evitare attese inutili all'interno della finestra, il programma selezionato può già autorizzare avvii condizionati al rilascio delle risorse. In questo caso la CTPN esegue la decisione senza richiedere una nuova ottimizzazione a ogni completamento. Se invece, quando un operatore si libera, si vuole scegliere un nuovo ordine non incluso nel programma confermato, occorre attivare un ulteriore aggiornamento MPC a evento. Quest'ultima possibilità integra la ripianificazione periodica e deve essere valutata rispetto al costo computazionale.
+
+Alla fine della finestra temporale si conservano le attività ancora in corso, le disponibilità previste, le associazioni ordine--operatore e le deadline originarie. La finestra successiva riparte da questo stato, senza considerare artificialmente libere tutte le otto risorse e senza azzerare il tempo trascorso degli ordini aperti.

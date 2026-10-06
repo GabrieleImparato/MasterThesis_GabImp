@@ -1,0 +1,79 @@
+\begin{enumerate}
+	\item Migliorare il modello di simulazione
+	\item Disturbi e parte predittiva
+\end{enumerate}
+
+\begin{itemize}
+	\item Sviluppare algoritmo in base al giorno successivo 
+	\item Diversi (modi) allocazione di risorse (???)
+	\item Definire il tasso di errore (scostamento)
+	\item Trovare allocazione di risorse che minimizza l'errore
+	\begin{itemize}
+		\item Definire l'errore
+		\item Definire la funzione obiettivo
+		\item Certo numero di combinazioni
+		\item Simulazione "inline"
+		\item Simulazione off-line sera prima come riferimento per giorno dopo
+		\item orizzonte più piccolo in linea
+	\end{itemize}
+\end{itemize}
+
+Si dovrebbe usare un sistema closed-loop dove il riferimento è il numero
+di missioni e si dovrebbe minimizzare il tempo di esecuzione
+L'errore è la differenza tra numero di missioni previste e quelle svolte\newline
+
+
+\noindent BATCH FUTURO -> Sto in x\_k devo decidere x\_k+1 -> ragionare a chunk "temporali"\newline
+
+\noindent Si usa lo stato:
+\begin{itemize}
+	\item missioni residue
+	\item posizione delle risorse
+\end{itemize}
+
+\noindent Poi:
+\begin{itemize}
+	\item valutazione indice di prestazione
+	\item svolgere la simulazione per una durata di tempo previsto
+\end{itemize}
+
+
+\section{APPUNTI 11 Settembre incontro Beta80}
+\begin{enumerate}
+	\item Raggruppare le missioni per numero ordine e svolgere le missione in ordine di priorità (NM\_PRIORITY)
+	\item Fare eseguire le missioni relative ad un singolo ordine ad un SOLO operatore
+	\item Definire una deadline per lo svolgimento di un singolo ordine in base al numero di missioni per ordine. Es. \texttt{num\_missioni*durata\_euristica}
+\end{enumerate}
+Raggruppare le missioni per numero d'ordine ed eseguirle in base alla priorità (NM\_PRIORITY);Far eseguire le missioni relative a un singolo ordine a un SOLO operatore;Definire una deadline per il completamento di ciascun ordine in base al numero di missioni associate, ad esempio:
+numero\_missioni × durata\_media\_missione;Individuare un ordine di esecuzione delle missioni ottimale.
+
+\subsection{Appunti prof}
+
+\begin{enumerate}
+	\item Un ordine si snoda in una o più missioni. Pertanto, a ciascuna
+	missione è associato un identificativo di ordine. Tutte le missioni
+	relative allo stesso ordine vanno eseguite dallo stesso operatore.
+	Tuttavia, ciascuna missione ha una priorità da interpretarsi solo
+	rispetto alle missioni dell'ordine di cui essa fa parte. Ad un ordine
+	può essere associata una deadline (da inserire a mano, non è presente
+	attualmente nei file forniti) da intendersi come durata massima di
+	esecuzione dell'ordine (dall'inizio dell'esecuzione della prima missione
+	al completamento dell'ultima missione presente nell'ordine).
+	Si vuole ottimizzare il numero di risorse per l'esecuzioni di missioni
+	in un turno di lavoro tenendo conto di questi nuovi vincoli;
+	\item Rispetto all'ottimizzazione di cui al punto 1) al tempo di esecuzione
+	si verificano per svariati motivi scostamenti. Si vuole rischedulare con
+	una frequenza da valutare in base alla complessità computazionale
+	l'ordine delle missioni calcolato offline al fine di ridurre l'errore
+	rispetto ad indici tipo percentuale di utilizzo di una risorsa,
+	percentuale di ordini completata sul totale etc. L'approccio da
+	utilizzare è del tipo predittivo con "receding horizon". Si ipotizza di
+	suddividere l'elenco di missioni in batch di dimensione fissata, ciò è
+	essenziale per motivi pratici, non avrebbe senso ogni volta considerare
+	l'intero residuo di di missioni da eseguire. Gli istanti sono i batch,
+	il passo k è il batch appena eseguito, il passo k+1 il successivo, se
+	l'orizzonte è 3, predico il comportamento e lo ottimizzo sui successivi
+	3 batch e ne applico l'ordine solo al successivo e così in avanti. Il
+	grado di libertà è costituito dal sequenziamento degli ordini, essendo
+	stavolta fissato il numero di risorse.
+\end{enumerate}

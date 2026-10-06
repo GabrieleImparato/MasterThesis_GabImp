@@ -1,0 +1,101 @@
+﻿\subsection{Che cosa ereditiamo dalle due tesi}
+
+Le due tesi dell'anno accademico 2021/2022 descrivono parti complementari dello stesso approccio. \textbf{Parlato} sviluppa soprattutto la generazione del modello a partire dalle missioni, la compatibilità delle risorse e la stima dei tempi tramite path planning. \textbf{Rotondo} descrive soprattutto l'evoluzione temporizzata della rete, la risoluzione dei conflitti e l'uso dei risultati per valutare numero e carico degli operatori \cite[sezioni 2.3--2.5]{Parlato}\cite[sezioni 2.3--2.6]{Rotondo}.
+
+Nelle indicazioni di pagina che seguono usiamo la numerazione stampata nelle tesi: nei due PDF la pagina del visualizzatore è maggiore di uno. I riferimenti ai file MATLAB riguardano invece il codice consultato nella cartella \texttt{sim}. La descrizione storica, il codice attuale e le estensioni MPC sono distinti: non attribuiamo alle vecchie tesi le nuove regole sugli ordini.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{2.4cm}XX@{}}
+\toprule
+Componente & Base sviluppata & Impiego nella proposta MPC\\
+\midrule
+Generazione & Moduli di missione, matrici e archi colorati & Generare il modello di ciascun sottoinsieme candidato\\
+Percorsi & Posizione della risorsa, percorso alla presa e alla consegna & Stimare durate diverse per composizioni e sequenze diverse\\
+Simulazione & Marcatura, eventi temporizzati e assegnazione delle risorse & Prevedere l'esito di ciascun programma prima di applicarlo\\
+Ottimizzazione & Valutazione del carico e del numero di risorse & Confrontare $n$ candidati mantenendo otto risorse\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Il modulo di missione descritto da Parlato}
+
+Parlato descrive una missione con \textbf{tre transizioni e due posti interni}: la prima transizione acquisisce la risorsa, la seconda rappresenta la lavorazione temporizzata, la terza restituisce la risorsa. Avvio e rilascio hanno durata nulla nel modello; la durata della missione è associata alla transizione centrale \cite[sezione 2.3.2, pp. 19--22, figure 2.5--2.8]{Parlato}.
+
+Usando nomi simbolici per rendere leggibile il modulo:
+\[
+ p_{\mathrm{libere}}
+ \longrightarrow t_j^{\mathrm{avvio}}
+ \longrightarrow p_j^{\mathrm{attiva}}
+ \longrightarrow t_j^{\mathrm{lavoro}}
+ \longrightarrow p_j^{\mathrm{fine}}
+ \longrightarrow t_j^{\mathrm{rilascio}}
+ \longrightarrow p_{\mathrm{libere}}.
+\]
+
+I nomi dei due posti interni sono descrittivi; nel codice si usano indici numerici. La transizione centrale rappresenta l'intera durata stimata, non ulteriori transizioni separate per ogni tratto del percorso. Il posto comune delle risorse, \texttt{p1} nel simulatore, collega i moduli e rappresenta la competizione tra missioni per gli stessi operatori.
+
+Se il token del colore 3 entra nel modulo della missione $j$, la risorsa 3 resta impegnata fino al rilascio. Lo stesso token non può abilitare contemporaneamente un'altra missione. Con $b$ missioni, la struttura costruita dal generatore ha $3b$ transizioni e $2b+1$ posti, contando il posto comune. Questa cardinalità riguarda il modulo di base, prima di eventuali posti aggiuntivi per nuovi vincoli.
+
+\subsection{Matrici, colori e compatibilità}
+
+Nelle tesi, la struttura è separata dalle informazioni sui colori. Le matrici \texttt{Pre} e \texttt{Post} hanno \textbf{transizioni sulle righe e posti sulle colonne}. La tabella \texttt{Arc} conserva origine, destinazione e matrice dei colori di ciascun arco. La marcatura \texttt{m} ha invece posti sulle righe e colori sulle colonne \cite[sezione 2.6.1, pp. 14--15]{Rotondo}.
+
+Con otto risorse, la marcatura di base ha quindi otto colonne. Se tutte sono disponibili, la riga del posto comune contiene un token per colore. Se una risorsa è impegnata, il suo token si trova nel modulo attivo e non va ricreato nel posto libero durante la generazione di un candidato.
+
+Parlato divide la generazione in tre funzioni \cite[sezione 2.3.2, pp. 17--23]{Parlato}:
+\begin{itemize}
+    \item \texttt{assignMission}: individua le risorse compatibili con la missione usando la tabella delle attitudini territoriali e prepara i colori ammessi;
+    \item \texttt{generateMatrices}: ripete il modulo di missione e costruisce la struttura del batch;
+    \item \texttt{generateArcs}: collega la struttura alle informazioni sui colori nella tabella degli archi.
+\end{itemize}
+
+\textbf{Compatibilità non significa scelta definitiva dell'operatore.} Una missione può ammettere più colori; la selezione di quello effettivamente usato avviene durante la costruzione o l'esecuzione del programma. Con i nuovi vincoli, bisogna anche verificare che l'operatore sia compatibile con tutte le missioni dell'ordine e conservare l'associazione fino alla chiusura.
+
+\subsection{La durata della transizione centrale}
+
+Nel modello di Parlato, il path planning usa A* sulla mappa del magazzino. Il percorso comprende due parti: dalla posizione attuale della risorsa al punto di presa e dal punto di presa alla destinazione. La struttura \texttt{resourcePos} conserva le posizioni necessarie a questo calcolo \cite[sezione 2.4.1, pp. 24--30]{Parlato}.
+
+La tesi descrive una stima che usa una velocità di circa $5{,}55$ m/s, maggiora del 20\% il tempo di viaggio e aggiunge 60 secondi per carico e scarico. Una riscrittura di quella stima, con distanze espresse in metri, è
+\begin{equation}
+    \widehat\tau_j(r)
+    =1{,}2\,\frac{d(q_r,s_j)+d(s_j,g_j)}{5{,}55}
+      +60\quad\text{secondi},
+\end{equation}
+con $q_r$ posizione della risorsa, $s_j$ punto di presa e $g_j$ destinazione. Qui $s_j$ indica un punto geometrico, non un istante di avvio.
+
+Questi sono \textbf{parametri del modello storico}, non valori automaticamente validati per l'MPC attuale. Occorre verificare scala della mappa, distanze, tempi di servizio e calibrazione sui dati disponibili. La maggiorazione del 20\% è un correttivo medio: non equivale a simulare esplicitamente collisioni, congestione o disturbi casuali.
+
+Per l'MPC questa dipendenza dalla posizione è fondamentale. Cambiare la sequenza modifica la posizione da cui inizia la missione successiva e quindi può cambiare il tempo previsto. Una distanza statica tra due punti può essere memorizzata e riutilizzata; l'avvicinamento non va riutilizzato come durata fissa se cambia la posizione di partenza. Parlato identifica inoltre il path planning come principale costo computazionale nei casi esaminati: provare $n$ candidati richiede di misurare anche questo costo, senza trasferire automaticamente le prestazioni del vecchio esperimento alla nuova ricerca \cite[sezioni 2.4.1 e 3.6]{Parlato}.
+
+\subsection{SEL e politiche di scelta in Rotondo}
+
+Rotondo presenta una simulazione basata sulla \textbf{Scheduled Event List}: la rete individua gli eventi possibili, mentre la lista temporale determina il prossimo evento da elaborare. Dopo ogni evento si aggiornano ora, stato ed eventi ancora ammissibili \cite[sezione 2.3, pp. 10--11]{Rotondo}.
+
+Questa distinzione rimane nell'MPC: il controllore può decidere un avvio, ma non può rendere libero un operatore prima del completamento temporizzato della sua missione. Il risultato è una previsione di tempi e disponibilità, non soltanto una sequenza di scatti senza durata.
+
+La gestione dei conflitti descritta da Rotondo favorisce, tra i colori disponibili, quello con minore tempo accumulato. Sono inoltre descritte politiche che rendono temporaneamente indisponibile la risorsa più utilizzata, fino al recupero delle altre, e che bloccano una risorsa al superamento di una soglia di lavoro \cite[sezioni 2.6.2--2.6.3, pp. 16--20]{Rotondo}.
+
+\textbf{Queste politiche di bilanciamento non sono tutte vincoli fisici della rete.} Nel nuovo sistema una soglia può essere mantenuta se rappresenta un limite operativo effettivo. Bloccare deliberatamente un operatore solo per pareggiare i carichi è invece una scelta da rivalutare rispetto all'obiettivo di ridurre i tempi. Se la si conserva, deve comparire sia nella previsione sia nell'esecuzione, con le sue attese; se la si sostituisce con una penalità nel costo MPC, la modifica va dichiarata. Soprattutto, non deve alterare di nascosto la sequenza candidata.
+
+\subsection{Dai vecchi batch ai candidati del nuovo MPC}
+
+Le due tesi descrivono batch costruiti orientativamente con un numero di missioni doppio rispetto alle risorse, per limitare le dimensioni del modello. Con otto risorse questo suggerisce $b=16$ come valore iniziale da \emph{provare}, non come obbligo teorico. Parlato descrive anche una distribuzione del resto nei primi batch; il documento attuale adotta invece l'ultima dimensione ridotta quando necessario. Sono scelte di partizionamento, non proprietà delle reti di Petri \cite[sezione 2.3.1]{Parlato}\cite[sezione 2.6.3]{Rotondo}.
+
+La modifica richiesta è sostanziale: anziché generare soltanto il modello del prossimo gruppo già fissato, generiamo $n$ modelli candidati, oppure riutilizziamo una struttura equivalente cambiando le missioni associate. Ogni modello contiene una diversa combinazione delle missioni residue e parte dallo stesso stato delle otto risorse.
+
+\[
+\begin{gathered}
+ x_k\ \longrightarrow\ \{B_{k+1}^{(1)},\ldots,B_{k+1}^{(n)}\}\\
+ \longrightarrow\ \text{generazione e simulazione delle CPN candidate}\\
+ \longrightarrow\ \{J_1,\ldots,J_n\}
+ \longrightarrow\ \text{esecuzione del solo candidato scelto}.
+\end{gathered}
+\]
+
+La generazione di Parlato viene quindi richiamata all'interno del confronto predittivo; il simulatore di Rotondo ne valuta l'esito temporale. L'MPC aggiunge selezione tra alternative, previsione della continuazione quando richiesta e aggiornamento dalle osservazioni.
+
+Le vecchie valutazioni riguardano anche il dimensionamento degli operatori. Qui il numero resta otto. Inoltre Rotondo dichiara nel caso di validazione l'assenza di vincoli sul sequenziamento: \textbf{precedenze interne, operatore unico per ordine e deadline persistenti devono essere introdotti e verificati}, non considerati già garantiti dalla rete storica \cite[sezione 3.1, pp. 33--34]{Rotondo}.
+
+Nel codice consultato, \texttt{coloredPetri.m} e le funzioni di avanzamento costituiscono la base operativa; \texttt{r\_conflict\_colored.m} applica la scelta locale della risorsa. I punti seguenti spiegano come adattare questi componenti al nuovo programma predittivo.
+

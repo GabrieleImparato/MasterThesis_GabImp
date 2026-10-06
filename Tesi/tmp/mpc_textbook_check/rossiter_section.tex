@@ -1,0 +1,130 @@
+﻿\section{Model Predictive Control}
+\label{sec:mpc-theory}
+
+Model Predictive Control (MPC) chooses the next control action by predicting what may happen after that action is applied. A model evaluates possible future decisions, a cost function compares their performance, and constraints exclude decisions that cannot be accepted. The controller repeats this procedure using new measurements during operation.
+
+This section follows the introductory presentation in Rossiter's \textit{A First Course in Predictive Control} \cite[Sections 1.6--1.7]{Rossiter2018}. The symbols and prediction notation below follow the book, while the explanations focus on the concepts needed for the warehouse application.
+
+\subsection{Prediction and the receding horizon}
+
+Suppose the system is at step $k$. The controller knows the current measurements and considers several possible sequences of future inputs. It predicts the output produced by each sequence and chooses the one giving the best admissible performance. Only the first input is applied. At step $k+1$, the controller observes the actual result and solves the problem again.
+
+For example, a three-step prediction made at $k$ considers outputs at $k+1$, $k+2$ and $k+3$. After the first action, a new prediction considers $k+2$, $k+3$ and $k+4$. The horizon moves forward with the current step: this is the \emph{receding-horizon} principle.
+
+The remaining inputs of the old plan are predictions, not irrevocable commands. They can change when measurements show a delay or another deviation. Using these observations in the next decision is what closes the feedback loop \cite[Section 1.6.3]{Rossiter2018}.
+
+\subsection{The prediction notation used by Rossiter}
+
+Let $u_k$ be the input, $y_k$ the output and $r_k$ the desired output at step $k$. Rossiter uses $n_y$ for the output prediction horizon and $n_u$ for the number of independent future input moves. Here these symbols denote horizons, not the numbers of input and output variables.
+
+When it is necessary to distinguish a prediction from a measured value, the book uses a double subscript:
+\[
+    y_{k+i|k}=\text{output predicted for step }k+i
+                  \text{ using information at step }k.
+\]
+The second index indicates when the prediction is made. Following the book, it can be omitted when the prediction context is clear \cite[Section 2.3.3]{Rossiter2018}.
+
+Rossiter collects future values into vectors marked by a right-pointing arrow below the variable. For example,
+\begin{equation}
+    \underset{\rightarrow}{y}_{k+1}=
+    \begin{bmatrix}
+        y_{k+1|k}\\y_{k+2|k}\\\vdots\\y_{k+n_y|k}
+    \end{bmatrix}.
+    \label{eq:mpc-future-output}
+\end{equation}
+The arrow identifies a sequence of future values. A left-pointing arrow identifies available current and past information.
+
+The input change is defined as
+\begin{equation}
+    \Delta u_k=u_k-u_{k-1}.
+\end{equation}
+The vector $\Delta\underset{\rightarrow}{u}_k$ collects the future input changes being chosen, starting with $\Delta u_{k|k}$. Although its index starts at $k$, this first change is a decision still to be made. The previous input $u_{k-1}$ is already known.
+
+A usual choice restricts the future input to $n_u$ changes:
+\begin{equation}
+    \Delta u_{k+i|k}=0,\qquad i\geq n_u.
+    \label{eq:mpc-control-horizon}
+\end{equation}
+After the last permitted change, the predicted input stays constant. This is the parameterization shown in Rossiter's equation (4.8), not a rule that every MPC application must use \cite[Section 4.4.3]{Rossiter2018}.
+
+The distinction between the horizons is practical: $n_y$ specifies how far ahead we evaluate the output, while $n_u$ specifies how many input changes we can independently choose. Applying only the first change does not mean that $n_u=1$.
+
+\subsection{How the model produces predictions}
+
+Rossiter introduces the general linear prediction structure as
+\begin{equation}
+    \underset{\rightarrow}{y}_{k+1}
+       =H\Delta\underset{\rightarrow}{u}_k
+        +P\underset{\leftarrow}{x}_k.
+    \label{eq:mpc-stacked-prediction}
+\end{equation}
+This is the notation of equation (2.2) in the book \cite[Section 2.3.2]{Rossiter2018}. It separates the prediction into two contributions:
+\begin{itemize}
+    \item $P\underset{\leftarrow}{x}_k$ depends on the information already available, such as the current state or the past input and output values required by the model;
+    \item $H\Delta\underset{\rightarrow}{u}_k$ describes how future input changes modify the predicted output.
+\end{itemize}
+
+The matrices $H$ and $P$ are obtained from the model and the selected horizons. In this incremental form, $H$ is built from the system step response. The important point is that the predicted output depends explicitly on the decisions we are comparing. Here $H$ is a prediction matrix; it must not be confused with a number of future batches in a scheduling model.
+
+For a state-space model, Rossiter starts from
+\begin{equation}
+    x_{k+1}=Ax_k+Bu_k,\qquad y_k=Cx_k+d_k,
+    \label{eq:mpc-linear-model}
+\end{equation}
+where $x_k$ is the state and $d_k$ represents an output disturbance. Applying the state equation repeatedly produces the future states and outputs. For instance, the next state follows from the present state and the first input; the following state uses that predicted state and the next input.
+
+The book also expresses the stacked state-space output prediction as
+\begin{equation}
+    \underset{\rightarrow}{y}_{k+1}
+       =Px_k+H\underset{\rightarrow}{u}_k+Ld_k,
+    \label{eq:mpc-state-space-output}
+\end{equation}
+under the assumption that the estimated output disturbance remains constant in the prediction \cite[Section 2.4.2, equation (2.14)]{Rossiter2018}. In this expression the decision vector contains input values rather than increments. Rossiter reuses the symbols $H$ and $P$, but their matrices are constructed for the particular formulation: they are not numerically interchangeable with those in equation~\eqref{eq:mpc-stacked-prediction}. The matrix $L$ repeats the disturbance contribution over the output horizon.
+
+These equations explain the prediction mechanism. The warehouse can instead obtain its predictions by simulating its timed colored Petri net, provided that the simulation represents the consequences of the scheduling decisions.
+
+\subsection{The performance index}
+
+The cost function gives a numerical meaning to a better prediction. For output tracking, define the predicted error as
+\begin{equation}
+    e_{k+i}=r_{k+i}-y_{k+i|k}.
+\end{equation}
+A larger error means that the predicted output is farther from the desired one. Rossiter's equation (4.12) combines output errors and input changes:
+\begin{equation}
+\begin{aligned}
+    J={}&\sum_{i=1}^{n_y}e_{k+i}^{T}W_y e_{k+i}\\
+        &+\sum_{i=0}^{n_u-1}
+              \Delta u_{k+i}^{T}W_{\Delta u}\Delta u_{k+i}.
+\end{aligned}
+\label{eq:mpc-tracking-cost}
+\end{equation}
+All future quantities in this cost are predictions made at $k$; the second subscript is omitted as in the book \cite[Section 4.4.4, equation (4.12)]{Rossiter2018}.
+
+The first sum penalizes departure from the reference over $n_y$ steps. The second penalizes large input changes over the $n_u$ available moves. The matrices $W_y$ and $W_{\Delta u}$ set their relative importance. For scalar signals, each term is simply a squared error or squared input change multiplied by its weight.
+
+For example, predicting errors of 1 and 4 gives squared errors of 1 and 16: the second deviation contributes much more to the cost. Increasing the weight on input changes discourages abrupt actions, potentially accepting slower tracking. Weights should reflect both the importance and the units of the signals.
+
+Rossiter also presents the more general decomposition $J=J_e+J_u+J_{\Delta u}$, where $J_u$ penalizes input deviations from the required steady-state value $u_{ss}$ \cite[Section 4.4.3, equation (4.9)]{Rossiter2018}. Equation~\eqref{eq:mpc-tracking-cost} is the simpler version used here to explain the method. A separate terminal penalty is not added to this textbook expression.
+
+\subsection{Constraints and repeated optimization}
+
+The controller minimizes $J$ among future input sequences satisfying the constraints. In a continuous process these can include limits on input amplitude, input changes and predicted outputs. A sequence with a low cost is rejected if it violates a required constraint \cite[Section 1.6.8 and Chapter 7]{Rossiter2018}.
+
+The operating cycle is therefore:
+\begin{enumerate}
+    \item acquire the latest measurements and update the prediction;
+    \item determine admissible future input sequences;
+    \item choose a sequence minimizing the predicted cost;
+    \item apply only its first action;
+    \item observe the result and repeat at the next step.
+\end{enumerate}
+
+The real process may differ from its model. New observations allow the controller to correct subsequent decisions, but they do not guarantee that every disturbance can be recovered from. A horizon that misses important future effects can also lead to poor choices. Rossiter discusses horizon selection in Chapter 5 and stronger feasibility and stability conditions in Chapters 6 and 8. Those guarantees require their stated assumptions; they do not follow simply from repeating an optimization.
+
+\subsection{Meaning for the warehouse application}
+
+In the warehouse, the current information includes unfinished missions, positions, resource availability and order ownership. A decision is a candidate mini-batch together with its execution sequence. The Petri-net simulator predicts times and completions for that candidate. Resource capacity, compatibility, internal priorities and order duration limits determine whether it is admissible.
+
+The controller compares $n$ alternative subsets of residual missions and applies the selected batch. The number $n$ counts alternatives, whereas a prediction horizon counts consecutive future batches evaluated for each alternative. These quantities have different meanings.
+
+The application follows the same sequence of prediction, comparison, execution and observation, with eight fixed resources. Its objective concerns execution time and operational progress. The quadratic tracking cost above explains Rossiter's formulation; it is not automatically imposed on the discrete scheduling problem. Similarly, numerical input increments should not be formed by subtracting mission or order identifiers. The appropriate decisions and cost must be defined in terms of the actual warehouse operations.

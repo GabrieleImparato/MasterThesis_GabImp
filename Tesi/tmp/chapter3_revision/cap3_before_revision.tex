@@ -1,0 +1,403 @@
+\section{Scope and Two-Level Scheduling Architecture}
+\label{sec:order_scheduling_scope}
+
+The warehouse workload is organized into orders, each consisting of one or
+more missions. Every mission carries an order identifier, and all missions
+of the same order must be executed by the same operator. In the initial
+model, operator, mobile resource, and trolley denote the same scheduling
+entity. Mission priority is meaningful only within its order: a larger
+\texttt{NM\_PRIORITY} value indicates greater urgency.
+
+The design separates two problems. Offline planning minimizes the number of
+resources required to execute the known workload within a shift, respecting
+compatibility, order ownership, mission priorities, and order execution-time
+limits. Online rescheduling keeps the selected resources fixed and changes
+the sequencing of orders to compensate for execution deviations. Its aim is
+to reduce deviations from the offline performance reference, including
+resource utilization and the fraction of completed orders.
+
+This chapter specifies the proposed architecture, not an already validated
+implementation. The earlier mission-wise resource selector and accumulated
+workload predictor are a starting point, but do not solve the new order-level
+sequencing problem. The following design replaces that formulation as the
+target for subsequent implementation.
+
+\section{Order Constraints and Priorities}
+
+Let $\mathcal M$ denote the shift missions, $\mathcal O$ the orders, and
+$\mathcal M_o$ the missions of order $o$. Order identifiers define a partition
+of $\mathcal M$. The actual input column and its uniqueness scope still
+require verification: mission identifiers must not be used as order
+identifiers without checking the data.
+
+\subsection{One Operator per Order}
+
+Let $\mathcal R$ be the available resources, $a_{or}$ binary order assignments,
+and $z_r$ binary resource-activation variables. Offline planning requires
+\begin{align}
+ \sum_{r\in\mathcal R}a_{or}&=1 &&\forall o\in\mathcal O,\\
+ a_{or}&\leq z_r &&\forall o,r,\\
+ a_{or}&=0 &&\forall r\notin\mathcal F_o,
+\end{align}
+where $\mathcal F_o=\bigcap_{i\in\mathcal M_o}\mathcal F_i$ and
+$\mathcal F_i$ contains the operators compatible with mission $i$.
+An empty intersection makes the order incompatible with the available
+resources under the single-operator requirement.
+
+Every mission of order $o$ inherits its operator $r_o$. This identity persists
+until the last mission completes, including across batch boundaries and idle
+periods. The proposed online baseline retains the offline order assignments,
+so sequencing is its only decision variable. Reassigning an unstarted order
+would introduce an additional degree of freedom and is outside this baseline.
+
+\subsection{Priority Within an Order}
+
+Let $p_i$ be the \texttt{NM\_PRIORITY} value of mission $i$. If
+$i,j\in\mathcal M_o$ and $p_i>p_j$, mission $i$ is more urgent than $j$.
+Values from different orders do not define a global priority ranking. No
+order-level priority is inferred from their maximum or average.
+
+Two interpretations must be distinguished. A dispatch preference selects
+the higher-priority mission among executable missions of the same order.
+A mandatory precedence instead requires
+\begin{equation}
+ f_i\leq s_j,
+\end{equation}
+where $s_j$ and $f_i$ are start and completion times: mission $j$ must then
+wait even when mission $i$ is temporarily unavailable. Neither interpretation
+creates precedence between unrelated orders. Priorities 9 and 4 in order A,
+for example, do not prevent a mission of order B with priority 2 from
+starting on another operator.
+
+The priority direction and within-order scope are established. Dispatch
+preference versus mandatory precedence, and tie-breaking for equal values,
+remain to be specified. Offline and online scheduling must use the same
+explicit rule. Technological precedences remain hard constraints regardless
+of the chosen priority interpretation.
+
+\subsection{Deadline as Maximum Elapsed Execution Time}
+
+An optional parameter $D_o>0$ is entered manually for order $o$; it is not
+currently supplied by the input files. It denotes a maximum elapsed execution
+duration, rather than a due date measured from shift start. Define
+\begin{equation}
+ S_o=\min_{i\in\mathcal M_o}s_i,\qquad
+ C_o=\max_{i\in\mathcal M_o}f_i.
+\end{equation}
+For every order with a specified limit, the requirement is
+\begin{equation}
+ C_o-S_o\leq D_o.
+ \label{eq:order_duration_limit}
+\end{equation}
+The clock starts at the actual start of the first mission and ends at the
+actual completion of the last. Waiting between missions, including time
+spent serving another order, counts toward this duration. Waiting before
+the first mission does not. Therefore this constraint alone does not penalize
+postponing an order's start; shift completion and progress against the offline
+reference must also be considered.
+
+Once an order starts, its absolute expiry time is
+\begin{equation}
+ d_o=S_o^{\mathrm{actual}}+D_o.
+\end{equation}
+The observed start and expiry are retained at subsequent updates. For an
+unstarted order, each candidate checks its predicted duration
+$\widehat C_o-\widehat S_o\leq D_o$. Entering a new batch never resets the
+clock. Orders without $D_o$ have no additional order-duration constraint,
+but remain part of the shift workload.
+
+The project PDF discusses estimating a duration from mission count and mean
+mission time. This can support the manual choice of $D_o$, but does not
+replace the required definition or provide a calibrated value. Nominal
+duration components, including travel and handling, must be specified before
+using such estimates.
+
+\section{Offline Resource Dimensioning and Reference Plan}
+
+For a shift duration $T_{\mathrm{shift}}$, the conceptual offline problem is
+\begin{equation}
+ \min_{z,a,\sigma,s,f}\sum_{r\in\mathcal R}z_r,
+\end{equation}
+subject to the assignment conditions, compatibility, the agreed priority
+rule, feasible routes, resource non-overlap, and
+\begin{equation}
+ 0\leq s_i<f_i\leq T_{\mathrm{shift}}\quad\forall i\in\mathcal M,
+ \qquad C_o-S_o\leq D_o
+\end{equation}
+for orders with a duration limit. Here $\sigma$ describes execution sequences.
+Durations can depend on the resource and its predecessor through repositioning
+travel. Among plans with the same resource count, completion time and load
+balance can be secondary criteria.
+
+A heuristic returns the smallest feasible resource configuration found,
+unless minimality is certified. Failure to find a schedule is not proof of
+infeasibility. The shift duration is an input constraint: a soft target around
+eight hours does not automatically authorize overtime.
+
+The selected plan fixes $\mathcal R^*$, $q^*=|\mathcal R^*|$, and $r_o$.
+It provides reference completion curves at physical time $t$:
+\begin{align}
+ N^{\mathrm{ref}}(t)&=\sum_{i\in\mathcal M}\mathbf1\{\bar f_i\leq t\},\\
+ O^{\mathrm{ref}}(t)&=\sum_{o\in\mathcal O}\mathbf1\{\bar C_o\leq t\}.
+\end{align}
+Resource utilization references come from active working times in this same
+plan. The reference obeys the online operational constraints and is preserved
+across updates rather than reset to conceal execution deviations.
+
+\section{Batch Clock and Receding Horizon}
+
+The baseline uses batches of fixed mission cardinality $m$, except for a
+possibly smaller final batch. At step $k$, batch $k$ has just been executed.
+The controller predicts the next $H$ batches and applies only the schedule
+for batch $k+1$. With $H=3$, it evaluates batches $k+1$, $k+2$, and $k+3$,
+executes the first, observes its outcome, and repeats from the updated state.
+
+For a concrete baseline, the offline mission list is partitioned into ordered
+batches whose membership is retained online. The controller changes the order
+of service within upcoming batches subject to ownership and intra-order
+rules. This limits the decision set to at most $Hm$ upcoming missions instead
+of the full residual workload. Moving missions between batches would require
+an additional admission rule and is not assumed here. Fixed membership is a
+baseline design choice whose restriction on achievable improvements must be
+evaluated.
+
+An order may cross several batches, retaining its operator, first-start time,
+priorities, and duration limit. Crossing a boundary neither closes nor
+restarts the order. Whether different orders may be interleaved on one
+operator is a separate policy still to be settled.
+
+Let $t_k$ be the physical completion time of batch $k$. The baseline uses a
+global batch-completion event, so the elapsed interval
+\begin{equation}
+ h_{k+1}=t_{k+1}-t_k
+\end{equation}
+is variable and includes the time until the last resource finishes its batch
+work. Earlier-finishing resources may wait at the boundary; this overhead
+must be measured. Each candidate has its own predicted batch-completion times
+and is compared with the reference at those same physical times.
+
+The project PDF also proposes 30-minute periodic windows and adaptive
+mini-batch sizes. These are alternative designs, not equivalent to fixed-size
+batches: three batches do not necessarily span 90 minutes. They remain
+possible extensions. The baseline follows the batch-indexed formulation;
+$H=3$ is an initial configuration to evaluate, not a validated computational
+choice. The number $n$ of candidate schedules differs from the horizon $H$.
+
+\section{Persistent State and Predictive Model}
+
+Accumulated workload alone does not represent order ownership, elapsed
+deadlines, and execution progress. A proposed state is
+\begin{equation}
+\begin{split}
+ x_k=\big(&t_k,\mu_k,\mathcal W_k,\mathcal I_k,\mathcal C_k,
+ \{p_r,b_r,\rho_r,A_r\}_{r\in\mathcal R^*},\\
+ &\{r_o,S_o,d_o\}_{o\in\mathcal O},\widehat\theta_k\big).
+\end{split}
+\end{equation}
+Here $\mu_k$ is the CPN marking; $\mathcal W_k$, $\mathcal I_k$, and
+$\mathcal C_k$ are unstarted, active, and completed missions. Resource fields
+are position $p_r$, availability $b_r$, estimated residual processing time
+$\rho_r$, and accumulated active working time $A_r$. Start and expiry fields
+are unset until applicable; $\widehat\theta_k$ contains duration-model
+estimates. Mission records retain order identifiers, priorities, and batch
+membership. Pending events and clocks must also be retained for resumption
+inside an execution.
+
+For a fixed workload, conservation requires
+\begin{equation}
+ \mathcal M=\mathcal W_k\mathbin{\dot\cup}\mathcal I_k
+ \mathbin{\dot\cup}\mathcal C_k.
+\end{equation}
+At normal batch-completion updates, the active set is empty under the global
+barrier convention. It remains necessary for simulation events and possible
+future periodic updates.
+
+The input $u_{k+1}$ specifies order sequences for the next batch on the fixed
+resources. Intra-order choices follow the agreed priority rule. The dynamics
+are represented by an event-driven transition:
+\begin{align}
+ x_{k+1}&=F(x_k,u_{k+1},w_{k+1}),\\
+ \widehat x_{k|k}&=x_k,\\
+ \widehat x_{k+\ell|k}&=\widehat F(\widehat x_{k+\ell-1|k},
+ u_{k+\ell|k};\widehat\theta_k),\quad\ell=1,\ldots,H.
+\end{align}
+The actual disturbance $w_{k+1}$ is unknown at planning time. The predictor
+uses available observations and estimates, never future realized durations.
+A workload update $T_r^+=T_r+\Delta T_r$ remains useful as accounting, but a
+constant-matrix workload model is not a complete sequencing model.
+
+\section{CPN and Path Feasibility}
+
+The CPN enforces admissible starts, compatibility, and resource availability.
+An order register or equivalent persistent token data enforces $r_o$ across
+missions. Reserving the resource only during a single mission is insufficient.
+For execution intervals $[s_i,f_i)$, capacity requires
+\begin{equation}
+ \sum_{i:r_{o(i)}=r}\mathbf1\{s_i\leq t<f_i\}\leq1\qquad\forall r,t.
+\end{equation}
+Starts are controllable scheduling decisions; completions follow from the
+execution dynamics and cannot be freely selected by the optimizer.
+
+A* supplies feasible paths and travel estimates from predicted resource
+positions. Sequence changes can alter repositioning times and must therefore
+be reflected in prediction. Candidates violating compatibility, capacity,
+technological precedences, or the agreed priority rule are rejected. If the
+assigned operator cannot reach a mission, that mission cannot simply be
+given to another operator. Deferral preserves its identity and order history
+and cannot be reported as batch completion; an explicit recovery is needed.
+
+\section{Performance Outputs and Online Objective}
+
+Observed counts $N(t)$ and $O(t)$ use actual completion events. An order is
+complete only after all its missions finish. For a nonempty order set,
+\begin{equation}
+ c_O(t)=\frac{O(t)}{|\mathcal O|},\qquad
+ c_O^{\mathrm{ref}}(t)=\frac{O^{\mathrm{ref}}(t)}{|\mathcal O|}.
+\end{equation}
+Multiplying by 100 gives the completed-order percentage. Resource utilization
+for $t>0$ is
+\begin{equation}
+ \eta_r(t)=\frac{A_r(t)}{t}.
+\end{equation}
+The denominator is elapsed time since shift start; scheduled breaks would
+require a consistent adjustment in reference and observation. Active work
+excludes waiting. Utilization at zero elapsed time is not used in the cost.
+
+The signed mission error is $e_N(t)=N^{\mathrm{ref}}(t)-N(t)$. A negative
+value denotes progress ahead of the reference. It is already included in the
+cumulative counts and must not be added again as a separate credit. Extra
+short missions do not establish enough available time to complete a long
+order within its duration limit.
+
+For $U_k=(u_{k+1|k},\ldots,u_{k+H|k})$, a proposed dimensionless cost is
+\begin{align}
+ J_H={}&\sum_{\ell=1}^H\Bigg(
+ w_O\left[c_O^{\mathrm{ref}}(\widehat t_{k+\ell|k})
+ -\widehat c_{O,k+\ell|k}\right]_+^2\nonumber\\
+ &+\frac{w_\eta}{q^*}\sum_{r\in\mathcal R^*}
+ \left[\widehat\eta_{r,k+\ell|k}
+ -\eta_r^{\mathrm{ref}}(\widehat t_{k+\ell|k})\right]^2\Bigg)
+ +V_f(\widehat x_{k+H|k}),
+\end{align}
+where $[v]_+=\max(0,v)$ and weights are nonnegative and require tuning.
+The completion term penalizes falling behind without penalizing early
+completion. Utilization tracking is subordinate to feasibility and must be
+checked for unwanted incentives to create idle time.
+
+One possible terminal term is
+\begin{equation}
+ V_f(x)=w_W\frac{\widehat W(x)}{W_s},\qquad W_s>0,
+\end{equation}
+where $\widehat W$ estimates remaining work, including active residual times.
+It discourages ignoring residual work but is not an exact completion-time
+estimate or a stability guarantee. With fixed membership and sequence-
+independent durations, it may be equal across candidates and then cannot
+distinguish their sequences.
+
+For orders continuing beyond the prediction horizon, the controller must
+retain elapsed clocks and evaluate a feasible continuation to completion,
+or explicitly flag that full deadline feasibility has not been established.
+A lower bound on remaining duration detects some impossible cases, but
+passing it does not certify feasibility. These checks can inspect residual
+order metadata beyond the $Hm$ decision missions without optimizing the
+entire remaining workload. An unfinished order is never assigned zero
+lateness risk simply because its completion lies outside the horizon.
+
+The nominal baseline treats specified maximum durations as constraints.
+Replacing them with lateness penalties is a different service policy still
+to be agreed for recovery. If adopted explicitly, lateness is
+$[C_o-S_o-D_o]_+$; its weight is not inferred by comparing mission priorities
+across orders.
+
+\section{Online Optimization and Execution Loop}
+
+The finite-horizon scheduling problem is
+\begin{equation}
+ U_k^*\in\underset{U_k\in\mathcal U_H(x_k)}{\operatorname{arg\,min}}
+ J_H(x_k,U_k),\qquad u_{k+1}=u_{k+1|k}^*.
+\end{equation}
+The feasible set includes fixed resources and order assignments, batch
+membership, priority rules, paths, capacity, shift limits, and applicable
+order-duration constraints. Near the end of the list, the predicted batch
+count is reduced to the remaining number.
+
+A first implementation can use bounded simulation-based search. Each
+candidate starts from an independent copy of the observed state and is
+evaluated over $H$ batches. Order swaps and insertions are possible sequence
+moves, admitted only when consistent with committed constraints. A common
+continuation heuristic can limit search in future batches. The result is
+then the best feasible candidate found, not a certified global optimum.
+
+The loop is:
+\begin{enumerate}
+ \item Observe the completed batch and update completion events, resource
+ states, order clocks, and model estimates.
+ \item Retain the next $H$ batches and reconstruct a baseline candidate from
+ the previous plan, rechecking it against the observed state.
+ \item Generate alternative order sequences within a computation budget
+ $\tau_{\mathrm{calc}}$ and simulate each from the same initial state.
+ \item Verify constraints, including obligations of orders crossing the
+ horizon, and evaluate the performance cost.
+ \item Keep the best verified candidate and apply only its first batch;
+ the remaining predicted batches are provisional.
+ \item Execute with actual disturbances, record events, and repeat after
+ batch completion. Stop when the workload is complete or the shift-end
+ and recovery policy requires stopping.
+\end{enumerate}
+
+Computation time includes candidate generation, path evaluation, simulation,
+and state reconciliation. Latency must be included in the execution timeline
+or explicitly assumed negligible in an initial experiment. Batch size $m$,
+horizon $H$, candidate count, and budget require measured calibration.
+Smaller batches produce more frequent feedback but more updates and possible
+synchronization overhead.
+
+When no verified candidate is found, preserve ownership and existing
+commitments and report the cause. Resource unavailability, an expired
+deadline, budget exhaustion, and proven infeasibility are distinct outcomes.
+Constraints must not be silently relaxed to return a schedule.
+
+\section{Implementation Decisions and Validation}
+
+The outstanding decisions from the project document are updated as follows:
+\begin{enumerate}
+ \item \textbf{Order identifier:} verify the column and uniqueness scope.
+ \item \textbf{Priority direction:} larger \texttt{NM\_PRIORITY} means
+ greater urgency within its order; tie-breaking remains open.
+ \item \textbf{Priority enforcement:} choose dispatch preference or mandatory
+ intra-order precedence using the distinction explained above.
+ \item \textbf{Order continuity:} crossing batches is allowed; interleaving
+ different orders on one operator remains to be decided.
+ \item \textbf{Resource identity:} operator and trolley coincide initially.
+ \item \textbf{Deadline origin:} actual first-mission start, as required by
+ the elapsed-duration definition. Manual values and nominal duration
+ components still need specification.
+ \item \textbf{Deadline recovery:} limits are nominal constraints; decide
+ how to handle unavoidable violations during execution.
+ \item \textbf{Prediction and search:} test $H=3$ initially; calibrate $m$,
+ budget, and continuation. Fixed batch membership and offline ownership
+ are explicit baseline choices to validate.
+ \item \textbf{Update timing:} use batch completion, without a mandatory
+ 30-minute wait. Periodic or asynchronous updates require another policy.
+\end{enumerate}
+
+Validation starts with small deterministic examples: single-mission orders,
+orders crossing batches, different priorities within one order, parallel
+orders, missing optional deadlines, incompatible orders, and a final partial
+batch. Check for lost or duplicated missions, operator changes, invalid
+overlaps, reset clocks, and premature completion records. Interrupted and
+resumed simulation must match continuous execution under fixed decisions.
+
+Compare the unchanged offline plan, a one-batch controller, and the
+multi-batch controller with identical resources, assignments, workload, and
+priority policy. Disturbances must be comparable across policies and hidden
+from the predictor until observed. Report completed-order fraction, mission
+progress, utilization, duration violations, work remaining at shift end,
+batch waiting, and computation times. Incomplete orders remain in service
+metric denominators.
+
+Finding a feasible candidate does not prove recursive feasibility under
+disturbances or eventual completion. These require further assumptions and
+analysis. No experimental improvement is claimed before implementation and
+validation of the proposed architecture.
+
