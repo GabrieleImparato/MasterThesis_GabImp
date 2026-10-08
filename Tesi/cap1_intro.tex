@@ -16,14 +16,16 @@ In particular, \textit{Petri nets} are particularly well suited to this type of 
 
 In other cases, it may be useful to schedule the missions in advance, for example by planning the activities for the following working day. This makes it possible to determine beforehand how the available resources will be allocated, identify potential scheduling conflicts, and define suitable strategies to handle them before operations begin. Advance scheduling can also be used to improve workforce planning. For instance, the workload can be distributed among operators so that the duration of each shift remains as close as possible to the target working time, such as eight hours, while minimizing overtime. At the same time, the schedule can be optimized to reduce operating costs associated with the use of material-handling resources, including forklift energy consumption, fuel consumption, and unnecessary movements.
 
-Another relevant constraint is related to outbound logistics. Trucks often need to be loaded before specific departure times defined by the shipping schedule. Consequently, the missions associated with the goods assigned to a particular truck must be completed before its loading deadline. This introduces a scheduling problem with both resource constraints and time constraints. Optimization techniques such as \textit{linear programming} or, more commonly when discrete assignment decisions are involved, \textit{mixed-integer linear programming} (MILP) can be used to determine a feasible and efficient schedule. A possible approach is to identify, among the complete set of warehouse missions, those associated with a specific truck and assign them a higher scheduling priority according to the vehicle's departure deadline. These missions can then be optimized separately or incorporated into the global scheduling model with appropriate time constraints and priority rules. In this way, the scheduler can ensure that time-critical loading operations are completed while still considering the allocation of shared resources and the remaining warehouse activities.
-
-
-% THIS MAY BE OK
-Speaking about advance planning, another possible approach comes from the field of predictive control, namely \textit{Model Predictive Control} (MPC). MPC uses a mathematical model of the system to optimize a sequence of future decisions over a finite \textit{prediction horizon}. In the context of warehouse scheduling, the decision variables may represent, for example, the allocation of available resources, the assignment of missions, or, depending on the adopted model, routing decisions. The prediction horizon may correspond to several hours or even to a longer planning interval. One of the main advantages of MPC is its receding-horizon strategy. Instead of computing a complete plan once and keeping it unchanged, MPC repeatedly solves the optimization problem using the most recent information available. Only the first part of the computed solution is applied, after which the optimization is performed again. This makes the approach particularly interesting in environments where delays, resource unavailability, new missions, or other unexpected events may occur.
-
-Although MPC has traditionally been associated with the control of dynamical systems, it can also be extended to discrete, hybrid, and discrete-event systems. Therefore, its application to warehouse scheduling requires an appropriate model capable of representing discrete decisions such as mission assignment, resource allocation, and task sequencing. For longer-term planning, such as the organization of several working days, an MPC-based strategy could also be considered. However, increasing the prediction horizon generally \textit{increases the computational complexity of the optimization problem}. For this reason, a hierarchical approach may be preferable, in which long-term planning determines the overall allocation of missions and resources, while shorter-horizon optimization is used to react to changes during daily operations.
-
+\begin{comment}
+	Another relevant constraint is related to outbound logistics. Trucks often need to be loaded before specific departure times defined by the shipping schedule. Consequently, the missions associated with the goods assigned to a particular truck must be completed before its loading deadline. This introduces a scheduling problem with both resource constraints and time constraints. Optimization techniques such as \textit{linear programming} or, more commonly when discrete assignment decisions are involved, \textit{mixed-integer linear programming} (MILP) can be used to determine a feasible and efficient schedule. A possible approach is to identify, among the complete set of warehouse missions, those associated with a specific truck and assign them a higher scheduling priority according to the vehicle's departure deadline. These missions can then be optimized separately or incorporated into the global scheduling model with appropriate time constraints and priority rules. In this way, the scheduler can ensure that time-critical loading operations are completed while still considering the allocation of shared resources and the remaining warehouse activities.
+	
+	
+	% THIS MAY BE OK
+	Speaking about advance planning, another possible approach comes from the field of predictive control, namely \textit{Model Predictive Control} (MPC). MPC uses a mathematical model of the system to optimize a sequence of future decisions over a finite \textit{prediction horizon}. In the context of warehouse scheduling, the decision variables may represent, for example, the allocation of available resources, the assignment of missions, or, depending on the adopted model, routing decisions. The prediction horizon may correspond to several hours or even to a longer planning interval. One of the main advantages of MPC is its receding-horizon strategy. Instead of computing a complete plan once and keeping it unchanged, MPC repeatedly solves the optimization problem using the most recent information available. Only the first part of the computed solution is applied, after which the optimization is performed again. This makes the approach particularly interesting in environments where delays, resource unavailability, new missions, or other unexpected events may occur.
+	
+	Although MPC has traditionally been associated with the control of dynamical systems, it can also be extended to discrete, hybrid, and discrete-event systems. Therefore, its application to warehouse scheduling requires an appropriate model capable of representing discrete decisions such as mission assignment, resource allocation, and task sequencing. For longer-term planning, such as the organization of several working days, an MPC-based strategy could also be considered. However, increasing the prediction horizon generally \textit{increases the computational complexity of the optimization problem}. For this reason, a hierarchical approach may be preferable, in which long-term planning determines the overall allocation of missions and resources, while shorter-horizon optimization is used to react to changes during daily operations.
+	
+\end{comment}
 % to check
 
 
@@ -43,14 +45,16 @@ Load balancing combines completed processing time and the estimated duration
 of queued work. The Petri-net marking persists between batches, preserving
 the state of unfinished orders.
 
-The common batch deadline and the cumulative order deadlines provide
-performance references. Exceeding them does not interrupt missions or
-prevent replenishment required to reach the target. The experiments examine
-workload distribution, resource utilization and completion punctuality.
-The MILP and MPC approaches discussed above provide broader context and
-possible extensions; the implemented policy does not solve those optimization
-problems. Likewise, routing uses a static map without modeling collisions
-between moving resources or optimizing energy consumption.
+\begin{comment}
+	The common batch deadline and the cumulative order deadlines provide
+	performance references. Exceeding them does not interrupt missions or
+	prevent replenishment required to reach the target. The experiments examine
+	workload distribution, resource utilization and completion punctuality.
+	The MILP and MPC approaches discussed above provide broader context and
+	possible extensions; the implemented policy does not solve those optimization
+	problems. Likewise, routing uses a static map without modeling collisions
+	between moving resources or optimizing energy consumption.
+\end{comment}
 
 Chapter~2 introduces the event, Petri-net and scheduling concepts used by
 the model. Chapter~3 develops the queue policy, the persistent execution

@@ -1,697 +1,647 @@
-The following chapter describes the design behind the assignment of the missions to the resources. The system considers \textit{eight} resources, each of one is the composition of human operator and forklift. The orders are known at the beginning of the startup and they are assigned progressively, keeping every mission of a singular order attached to their resource.
+This chapter describes how missions are assigned to resources. The system uses
+\textit{eight} resources, each consisting of a human operator and a forklift.
+All orders are known before the simulation starts. They are assigned
+progressively, and every mission of an order stays with the same resource.
 
-The 
+The policy organizes decisions through global batching steps. The parameter
+$x$ sets the number of new missions added at each refill and, in the chosen
+configuration, the number of global completions that triggers the next step.
+New missions are added to any remaining work: $x$ is not an upper limit on the
+total number of admitted missions.
 
-La politica organizza le decisioni mediante interventi globali di batching.
-Il parametro $x$ definisce il
-numero di nuove missioni da aggiungere a ogni refill e, nella configurazione
-adottata, il numero di completamenti globali che attiva l'intervento
-successivo. Le nuove missioni si aggiungono al lavoro eventualmente residuo:
-$x$ non costituisce una capienza massima dell'insieme delle missioni ammesse.
+The simulation keeps the resource state at each assignment step. A resource
+with a mission in progress keeps its path and scheduled completion time.
+A resource with an empty queue can receive new work starting from the time
+it finished its previous work. The global decision time is therefore separate
+from the local times at which new missions are inserted. The method builds an
+offline schedule and can fill earlier gaps in each resource's timeline.
 
-La simulazione conserva lo stato delle risorse durante ciascuna
-riassegnazione. Una risorsa con una missione in esecuzione mantiene il
-percorso e il completamento programmato; una risorsa che ha esaurito la
-propria coda può ricevere nuovo lavoro a partire dall'istante in cui l'ha
-terminata. L'istante della decisione globale viene pertanto distinto dagli
-istanti locali di inserimento delle nuove missioni. Il metodo costruisce
-una pianificazione offline, nella quale è possibile completare
-retroattivamente la timeline delle singole risorse.
+Execution is controlled by a Colored Timed Petri Net (CTPN), which represents
+precedence constraints and resource reservation. The A* planner determines the
+paths and durations of missions when they start. The Euclidean estimate is used
+only to set order deadlines and assess whether they are met after execution.
+It does not affect assignment, refill, or the conditions for starting missions.
 
-L'esecuzione è governata da Colored Timed Petri Net (CTPN), che rappresenta le precedenze e la
-riserva della risorsa. Il planner A* determina percorsi e durate delle
-missioni avviate. La stima euclidea è utilizzata esclusivamente per fissare
-le deadline degli ordini e valutarne il rispetto a posteriori; non
-interviene nell'assegnazione, nel refill o nell'abilitazione degli avvii.
+The model assumes that the prepared data define feasible missions and that all
+admitted missions are completed.
 
-Nel modello discusso si assume che i dati preparati definiscano missioni
-eseguibili e che tutte le missioni ammesse vengano portate a termine. 
-
-\section{Ordini, missioni e risorse}
+\section{Orders, missions and resources}
 \label{sec:progetto-modello}
 
-Siano $\mathcal O=\{o_1,\ldots,o_N\}$ l'insieme degli ordini e
-$\mathcal R=\{1,\ldots,R\}$ quello delle risorse, con $R=8$ nella
-configurazione di riferimento. Ogni ordine $o$ comprende un insieme di
-missioni $\mathcal M_o$, di cardinalità $n_o=|\mathcal M_o|$.
-Una missione descrive una movimentazione da un punto di prelievo FROM a un
-punto di destinazione TO ed è caratterizzata da un codice, una priorità e
-un'associazione all'ordine.
+Let $\mathcal O=\{o_1,\ldots,o_N\}$ be the set of orders and
+$\mathcal R=\{1,\ldots,R\}$ the set of resources, with $R=8$ in the reference
+configuration. Each order $o$ contains a set of missions $\mathcal M_o$, with
+$n_o=|\mathcal M_o|$ missions. A mission describes a movement from a pickup point
+FROM to a destination TO. It has a code, a priority, and an associated order.
 
-Ogni riga del dataset riceve anche un identificativo univoco di occorrenza.
-Due missioni con lo stesso codice commerciale rimangono quindi attività
-distinte. Una missione priva di identificativo d'ordine viene trattata come
-un ordine autonomo, senza accorpare tra loro tutte le righe prive di tale
-informazione.
+Each dataset row also receives a unique occurrence identifier. Two missions
+with the same commercial code therefore remain separate activities. A mission
+without an order identifier is treated as a separate order; rows without this
+information are not grouped into a single order.
 
-Si indica con $\mathcal M_o^{\mathrm{adm}}$ l'insieme delle missioni
-dell'ordine considerate dopo la preparazione dei dati. Il completamento
-descritto nel seguito è riferito a tale insieme. La preparazione verifica
-le informazioni necessarie e normalizza le coordinate prima
-dell'assegnazione; le eventuali righe non ammesse rimangono esterne alla
-rete operativa.
+The set $\mathcal M_o^{\mathrm{adm}}$ contains the missions of an order retained
+after data preparation. Completion in the following sections refers to this
+set. Data preparation checks the required information and normalizes coordinates
+before assignment. Any excluded rows remain outside the operational net.
 
 \begin{nota}
-	Uno script Python divide i dati aziendali per giorno lavorativo. Ogni
-	ordine resta interamente nello stesso lotto. Gli ordini del giorno sono
-	noti prima di avviare la simulazione.
+    A Python script splits the company data by working day. Each order stays
+    entirely within the same daily group. All orders for the day are known
+    before the simulation starts.
 \end{nota}
 
-\subsection{Vincolo di assegnazione ordine--risorsa}
+\subsection{Order--resource assignment constraint}
 
-Indicando con $r(o)$ la risorsa proprietaria dell'ordine, si impone
+Let $r(o)$ be the resource that owns order $o$. The model requires
 \begin{equation}
-	r(m)=r(o),\qquad \forall m\in\mathcal M_o^{\mathrm{adm}}.
+    r(m)=r(o),\qquad \forall m\in\mathcal M_o^{\mathrm{adm}}.
 \end{equation}
-Il proprietario viene scelto quando la prima missione dell'ordine viene
-accodata. L'associazione resta invariata anche quando l'ordine attraversa
-più interventi di batching. L'indivisibilità riguarda l'assegnazione alla
-risorsa: non impone di inserire tutte le missioni dell'ordine in un unico
-blocco di ammissione.
+The owner is chosen when the first mission of the order enters a queue.
+This assignment remains unchanged even if the order spans several batching
+steps. The order cannot be split across resources, but its missions can be
+admitted in different batches.
 
-Una risorsa può essere proprietaria di più ordini, ma ne esegue uno alla
-volta. Dall'avvio di un ordine fino alla conclusione della sua sequenza,
-il token rimane riservato a quell'ordine. Le sue missioni non vengono
-intercalate con quelle di altri ordini.
+A resource can own several orders, but executes one order at a time. From the
+start of an order to the end of its sequence, the token remains reserved for
+that order. Its missions are not interleaved with missions from other orders.
 
-\subsection{Priorità e precedenze interne}
+\subsection{Priorities and internal precedence}
 
-A ogni missione $m$ è associata una priorità numerica $p_m$. La sequenza
-interna dell'ordine è
+Each mission $m$ has a numerical priority $p_m$. The internal order sequence is
 \begin{equation}
-	\pi_o=(m_{o,1},\ldots,m_{o,n_o^{\mathrm{adm}}}),\qquad
-	p_{m_{o,i}}\geq p_{m_{o,i+1}},
+    \pi_o=(m_{o,1},\ldots,m_{o,n_o^{\mathrm{adm}}}),\qquad
+    p_{m_{o,i}}\geq p_{m_{o,i+1}},
 \end{equation}
-dove $n_o^{\mathrm{adm}}=|\mathcal M_o^{\mathrm{adm}}|$.
-A parità di priorità si mantiene l'ordine di ingresso; una priorità
-mancante assume il valore convenzionale unitario.
+where $n_o^{\mathrm{adm}}=|\mathcal M_o^{\mathrm{adm}}|$.
+Missions with equal priority keep their input order. A missing priority is
+assigned the default value of one.
 
-Questa regola riguarda soltanto le missioni dello stesso ordine. I nuovi
-ordini compatibili vengono considerati secondo la loro prima comparsa nel
-dataset, senza ordinamenti per numero di missioni, durata prevista,
-distanza o deadline. Le missioni residue di ordini già assegnati alla
-risorsa hanno precedenza sull'apertura di nuovi ordini.
+This rule applies only to missions within the same order. New compatible
+orders are considered in the order in which they first appear in the dataset.
+They are not sorted by mission count, estimated duration, distance, or deadline.
+Pending missions from orders already assigned to a resource take priority over
+starting new orders.
 
-\section{Politica di assegnazione ordini}
+\section{Order assignment policy}
 \label{sec:progetto-assegnazione}
 
-La politica applica i vincoli di compatibilità e assegnazione univoca
-introdotti nella Sezione~\ref{sec:theory-eligibility}. Distingue
-l'ammissione di nuovo lavoro dal dispatching delle missioni già in coda,
-secondo la Sezione~\ref{sec:theory-batch-queues}. Lo scheduler stabilisce
-quali attività aggiungere mentre la CTPN stabilisce quando tali attività possono
-iniziare.
+The policy applies the compatibility and unique-assignment constraints introduced
+in Section~\ref{sec:theory-eligibility}. It separates the admission of new work
+from the dispatching of queued missions, as described in
+Section~\ref{sec:theory-batch-queues}. The scheduler decides which activities to
+add, while the CTPN determines when they can start.
 
-\subsection{Compatibilità dell'intero ordine}
+\subsection{Compatibility of the whole order}
 
-Sia $\mathcal R_m\subseteq\mathcal R$ l'insieme delle risorse compatibili
-con la missione $m$. Per l'ordine si considera
+Let $\mathcal R_m\subseteq\mathcal R$ be the resources compatible with mission
+$m$. For the whole order,
 \begin{equation}
-	\mathcal R_o=\bigcap_{m\in\mathcal M_o^{\mathrm{adm}}}\mathcal R_m.
+    \mathcal R_o=\bigcap_{m\in\mathcal M_o^{\mathrm{adm}}}\mathcal R_m.
 \end{equation}
-Per il problema corrente assume $\mathcal R_o\neq\varnothing$ per ogni
-ordine. Il proprietario viene scelto in questo insieme, garantendo che
-possa eseguire l'intera sequenza. L'associazione viene fissata dalla prima ammissione e
-conservata nei refill successivi.
+The present problem assumes $\mathcal R_o\neq\varnothing$ for every order.
+The owner is chosen from this set, ensuring that it can execute the entire
+sequence. The assignment is fixed at the first admission and kept during later
+refills.
 
-\subsection{Blocco globale e refill additivo}
+\subsection{Global batch and additive refill}
 
-Sia $k$ l'indice dell'intervento di batching. Si distinguono:
+Let $k$ identify a batching step. The following sets are used:
 \begin{itemize}
-	\item $\mathcal A_k^{-}$, le missioni già ammesse e non ancora
-	completate prima del refill, comprendenti attese ed esecuzioni;
-	\item $\mathcal N_k$, le nuove missioni inserite durante il refill;
-	\item $\mathcal A_k^{+}$, il lavoro ammesso dopo l'assegnazione.
+    \item $\mathcal A_k^{-}$: missions already admitted but not yet completed
+    before the refill, including waiting and running missions;
+    \item $\mathcal N_k$: new missions added during the refill;
+    \item $\mathcal A_k^{+}$: admitted work after assignment.
 \end{itemize}
-Le missioni nuove sono distinte dai residui e valgono
+New missions are separate from the remaining work, so
 \begin{equation}
-	\mathcal A_k^{+}=\mathcal A_k^{-}\cup\mathcal N_k,
-	\qquad \mathcal A_k^{-}\cap\mathcal N_k=\varnothing,
-	\label{eq:refill-insiemi}
+    \mathcal A_k^{+}=\mathcal A_k^{-}\cup\mathcal N_k,
+    \qquad \mathcal A_k^{-}\cap\mathcal N_k=\varnothing,
+    \label{eq:refill-insiemi}
 \end{equation}
 \begin{equation}
-	|\mathcal N_k|\leq x,\qquad
-	|\mathcal A_k^{+}|=|\mathcal A_k^{-}|+|\mathcal N_k|.
-	\label{eq:refill-additivo}
+    |\mathcal N_k|\leq x,\qquad
+    |\mathcal A_k^{+}|=|\mathcal A_k^{-}|+|\mathcal N_k|.
+    \label{eq:refill-additivo}
 \end{equation}
-Quando rimangono almeno $x$ missioni assegnabili, $|\mathcal N_k|=x$, queste verranno inserite nell'ultimo blocco di rifornimento per le risorse.
-Le $x$ missioni costituiscono il totale globale da distribuire tra le
-risorse, non una quantità assegnata a ciascuna risorsa. Il lavoro residuo non riduce la dimensione del nuovo blocco. 
+When at least $x$ assignable missions remain, the new refill batch contains
+$|\mathcal N_k|=x$ missions. This is the global total to distribute across all
+resources, not the number assigned to each resource. Remaining work does not
+reduce the size of the new batch.
 \begin{example}[Mission admission set]
-	Con sette missioni ancora ammesse e $x=20$, un refill completo porta il
-	lavoro ammesso a ventisette missioni. L'ammissione non si basa su un numero
-	di posti liberi rispetto a una capienza fissa.
+    With seven missions still admitted and $x=20$, a full refill brings the
+    admitted work to twenty-seven missions. Admission is not based on the
+    number of free places within a fixed capacity.
 \end{example}
 
-Si indica con $C_k$ il numero di eventi di completamento registrati nel
-passaggio di esecuzione successivo all'assegnazione $k$ mentre il contatore delle missioni completate viene
-azzerato all'inizio del passaggio. Al raggiungimento di
+Let $C_k$ be the number of completion events recorded in the execution pass
+after assignment $k$. The completion counter is reset at the start of each pass.
+When
 \begin{equation}
-	C_k=x
-	\label{eq:trigger-refill}
+    C_k=x
+    \label{eq:trigger-refill}
 \end{equation}
-il motore sospende l'elaborazione prima di ulteriori avvii e, se rimane
-lavoro da assegnare, richiama lo scheduler. L'esaurimento della coda di una sola risorsa
-non attiva autonomamente un refill.
+the engine pauses before starting further missions and calls the scheduler if
+work remains to be assigned. An empty queue on a single resource does not
+trigger a refill on its own.
 
-Il contatore riguarda i completamenti elaborati nel passaggio, anche
-quando appartengono a missioni ammesse in precedenza. Non va identificato
-con un conteggio effettuato soltanto tra due istanti globali della timeline
-finale, poiché nuovi eventi possono essere inseriti retroattivamente.
+The counter includes all completions processed during the pass, including
+missions admitted earlier. It is not simply a count between two global times
+on the final timeline, because new events can be inserted at earlier times.
 
 \begin{nota}
-	Con inizializzazione vuota, primo blocco di $x$ missioni e soglia pari a
-	$x$ completamenti, il primo refill avviene quando quel blocco è interamente
-	concluso. La conservazione del lavoro residuo è una proprietà della
-	procedura, non implica che a ogni confine vi siano necessariamente
-	missioni in esecuzione. A parità di blocco e soglia, in assenza di residui
-	iniziali, questa stessa condizione si ripete nei passaggi successivi.
+    With an empty initial state, a first batch of $x$ missions, and a threshold
+    of $x$ completions, the first refill occurs when the entire batch has
+    finished. The procedure preserves any remaining work, but this does not
+    mean that missions must be running at every batch boundary. With equal
+    batch size and completion threshold and no initial remaining work, the
+    same condition holds in later passes.
 \end{nota}
 
-\subsection{Distribuzione delle missioni tra le risorse}
+\subsection{Distributing missions across resources}
 
-I principi di list scheduling della
-Sezione~\ref{sec:theory-list-scheduling} vengono applicati considerando il
-numero di missioni già ammesse per ciascuna risorsa. Per ogni risorsa si
-definisce
+The list scheduling principles in Section~\ref{sec:theory-list-scheduling} are
+applied using the number of missions already admitted for each resource.
+For each resource,
 \begin{equation}
-	q_r=|\{m\in\mathcal A:\ r(m)=r\}|,
+    q_r=|\{m\in\mathcal A:\ r(m)=r\}|,
 \end{equation}
-dove $\mathcal A$ è l'insieme delle missioni ammesse ma non ancora
-completate. Il conteggio include quindi sia la missione eventualmente in
-esecuzione sia quelle presenti in coda.
+where $\mathcal A$ contains admitted missions that have not yet completed.
+The count includes both any running mission and the missions waiting in the
+queue.
 
-Le risorse vengono considerate a partire da quella con il valore di $q_r$
-più basso, così da favorire quelle che hanno meno missioni già assegnate.
-In caso di parità, viene data precedenza alla risorsa che dispone di meno
-ordini compatibili ancora non assegnati. Se una risorsa possiede già un
-ordine con missioni ancora da accodare, tale condizione le conferisce
-priorità. Gli eventuali ulteriori pareggi sono risolti in base all'indice
-della risorsa. Il numero di ordini compatibili viene determinato all'inizio
-dell'intervento, mentre $q_r$ viene aggiornato dopo ogni nuova ammissione.
+Resources are considered starting with the lowest $q_r$, giving preference to
+those with fewer assigned missions. Ties are resolved in favour of the resource
+with fewer compatible unassigned orders. A resource that already owns an order
+with missions still to be queued receives priority. Any remaining ties are
+resolved by resource index. The number of compatible orders is computed at the
+start of the step, while $q_r$ is updated after each new admission.
 
-Una volta scelta la risorsa, la missione da ammettere viene individuata
-secondo due regole:
+Once a resource is selected, the next mission is chosen using two rules:
 \begin{enumerate}
-	\item Se esistono missioni ancora pendenti appartenenti a un ordine già
-	assegnato alla risorsa, viene scelta la prima disponibile, nel rispetto
-	delle precedenze interne all'ordine;
-	\item In assenza di missioni proprie da accodare, viene selezionato il
-	primo ordine compatibile ancora non assegnato, secondo l'ordine di
-	ingresso, e ne viene ammessa la prima missione pendente.
+    \item If an order already assigned to the resource has pending missions,
+    select the first available one, respecting the order's internal precedence.
+    \item If no owned missions remain to be queued, select the first compatible
+    unassigned order in input order and admit its first pending mission.
 \end{enumerate}
-Dopo ogni inserimento il valore di $q_r$ viene aggiornato e la procedura
-prosegue fino al completamento del nuovo blocco o all'esaurimento del
-lavoro disponibile. Le missioni già presenti in coda mantengono comunque
-la precedenza rispetto a quelle aggiunte successivamente.
+After each insertion, $q_r$ is updated. The procedure continues until the new
+batch is full or no work remains available. Missions already in the queue keep
+priority over those added later.
 
-Il criterio mira quindi a distribuire tra le risorse il numero di missioni
-ammesse, senza utilizzare una stima della loro durata. Di conseguenza, non
-garantisce né carichi temporali uguali né che tutte le risorse rimangano
-continuamente occupate. Il tempo di lavoro effettivo dipende infatti dai
-percorsi delle missioni e dalle caratteristiche degli ordini assegnati.
+The rule distributes the number of admitted missions without estimating their
+duration. It therefore guarantees neither equal processing workloads nor
+continuous activity on every resource. Actual working time depends on mission
+paths and the characteristics of the assigned orders.
 
-\subsection{Riferimento temporale nominale}
 
-Il tempo nominale per missione $\overline{\tau}=180\,\mathrm{s}$ consente
-di definire il riferimento
-\begin{equation}
-	H=\frac{x\,\overline{\tau}}{R}.
-	\label{eq:budget_temporale_batch}
-\end{equation}
-Indicando con $T_k$ l'istante della decisione globale $k$, si associa al
-passaggio la scadenza nominale
-\begin{equation}
-	D_k=T_k+H.
-\end{equation}
-Questo riferimento è utilizzato soltanto nel report. Non dimensiona le
-code, non determina il refill e non interrompe l'esecuzione. La durata
-delle missioni viene ricavata da A*. \begin{comment}
-	mentre le deadline dei singoli ordini
-	seguono il modello euclideo della
-	Sezione~\ref{sec:stima-deadline-euclidea}.
+\begin{comment}
+	\subsection{Nominal time reference}
+	
+	The nominal mission time $\overline{\tau}=180\,\mathrm{s}$ defines the reference
+	\begin{equation}
+		H=\frac{x\,\overline{\tau}}{R}.
+		\label{eq:budget_temporale_batch}
+	\end{equation}
+	If $T_k$ is the time of global decision $k$, the nominal deadline for the pass is
+	\begin{equation}
+		D_k=T_k+H.
+	\end{equation}
+	This reference is used only in the report. It does not set queue sizes, trigger
+	refills, or interrupt execution. Mission durations are obtained from A*.
+    Individual order deadlines instead follow the Euclidean model in
+    Section~\ref{sec:stima-deadline-euclidea}.
 \end{comment}
 
-
-\section{CTPN per la riserva della risorsa}
+\section{CTPN for resource reservation}
 \label{sec:progetto-ctpn}
 
-Il modello applica la rappresentazione colorata temporizzata introdotta
-nella Sezione~\ref{sec:theory-ctpn}, specializzando la riserva del token
-alla sequenza di missioni di un ordine.
+The model applies the timed coloured representation introduced in
+Section~\ref{sec:theory-ctpn}, extending token reservation to the mission
+sequence of a whole order.
+
+Figure~\ref{fig:pn2vecchiamissioni} recalls the previous model, which
+was organized around resource alternatives for a single mission. In the chosen
+solution, the scheduler assigns a resource to the entire order when its first
+mission is queued. The net uses the colour of the assigned resource instead
+of selecting a new owner for every mission.
+
 
 \begin{figure}[H]
-	\centering
-	\includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN2_VECCHIA_MISSIONI}
-	\caption{Schema di riferimento della modellazione precedente delle alternative di risorsa per una singola missione.}
-	\label{fig:pn2vecchiamissioni}
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN2_VECCHIA_MISSIONI}
+    \caption{Previous model of resource alternatives for a single mission.}
+    \label{fig:pn2vecchiamissioni}
 \end{figure}
 
-
-\noindent La Figura~\ref{fig:pn2vecchiamissioni} richiama lo schema precedente,
-organizzato intorno alle alternative di risorsa per una singola missione.
-Nella soluzione adottata lo scheduler assegna la risorsa all'intero ordine
-quando accoda la prima missione. La rete
-non seleziona un nuovo proprietario
-per ogni missione, ma utilizza il colore della risorsa già assegnata.
-
-
-Ciascuna missione mantiene una sottorete con tre transizioni e due posti
-interni. Le tre fasi rappresentano l'avvio, il completamento temporizzato
-e il passaggio alla missione seguente oppure il rilascio della risorsa.
-Le sottoreti dello stesso ordine vengono collegate in sequenza secondo
-le priorità interne.
+\noindent Each mission keeps a subnet with three transitions and two internal places.
+The three stages represent the start, timed completion, and either the move
+to the next mission or the release of the resource. Subnets belonging to the
+same order are connected in sequence according to internal priorities.
 
 \subsection{Intra-order links}
-Tra due missioni consecutive viene inserito un posto di collegamento che
-riceve il token dalla transizione finale della precedente e lo rende
-disponibile alla transizione iniziale della successiva. Il token conserva
-il colore della risorsa assegnata. Il posto di collegamento rappresenta
-quindi sia la precedenza sia il mantenimento della riserva operativa.
 
-La Figura~\ref{fig:pn1nuovamissioni} mostra una sequenza di tre missioni;
-i posti $P7$ e $P8$ collegano le rispettive sottoreti. Lo schema evidenzia
-le precedenze e va letto insieme al vincolo sul colore della risorsa.
+A linking place is inserted between consecutive missions. It receives the token
+from the final transition of one mission and makes it available to the initial
+transition of the next. The token keeps the assigned resource's colour.
+The linking place therefore represents both precedence and continued resource
+reservation.
+
+Figure~\ref{fig:pn1nuovamissioni} shows a sequence of three missions. Places
+$P7$ and $P8$ connect their subnets. The diagram shows precedence and must be
+read together with the constraint on resource colour.
 
 \begin{figure}[H]
-	\centering
-	\includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN1_NUOVA_MISSIONI}
-	\caption{Collegamento tra tre missioni dello stesso ordine mediante posti di precedenza. Il token della risorsa viene trasferito lungo la sequenza senza essere restituito al posto comune tra missioni intermedie.}
-	\label{fig:pn1nuovamissioni}
+    \centering
+    \includegraphics[width=0.7\linewidth]{imgs/Cap2_teoria/NEW_PN1_NUOVA_MISSIONI}
+    \caption{Three missions of the same order connected by precedence places.
+    The resource token moves through the sequence without returning to the
+    common place between intermediate missions.}
+    \label{fig:pn1nuovamissioni}
 \end{figure}
 
-Solo la prima missione dell'ordine preleva il token dal posto comune delle
-risorse disponibili; solo l'ultima missione ammessa lo restituisce.
-All'interno dell'ordine, la disponibilità necessaria all'avvio è rappresentata
-dal token nel posto di collegamento: non occorre prelevare nuovamente una
-risorsa libera dal posto comune.
+Only the first mission of an order takes a token from the common place of
+available resources; only the last admitted mission returns it. Within the
+order, the token in the linking place provides the availability needed to start
+the next mission. No additional free resource must be taken from the common
+place.
 
-Per ogni risorsa $r\in\mathcal R$ esiste esattamente un token di colore
-$r$ nella rete operativa. La conservazione del token è espressa
-dall'invariante di posto
+For each resource $r\in\mathcal R$, the operational net contains exactly one
+token of colour $r$. Token conservation is expressed by the place invariant
 \begin{equation}
-	\sum_{p\in\mathcal P}M(p)(r)=1,
-	\qquad \forall r\in\mathcal R,
+    \sum_{p\in\mathcal P}M(p)(r)=1,
+    \qquad \forall r\in\mathcal R,
 \end{equation}
-dove $M(p)(r)$ indica la molteplicità del colore $r$ nel posto $p$ e
-$\mathcal P$ è l'insieme dei posti della rete. La marcatura determina le
-transizioni abilitate, mentre l'associazione ordine--risorsa stabilisce
-il colore che può partecipare al loro scatto.
+where $M(p)(r)$ is the number of tokens of colour $r$ in place $p$, and
+$\mathcal P$ is the set of net places. The marking determines which transitions
+are enabled, while the order--resource assignment determines the colour allowed
+to take part in their firing.
 
 \begin{nota}
-	Per semplicità di rappresentazione, le reti di Petri mostrate nelle figure non sono CPN, bensì PN. Questo perché ciascuna figura rappresenta un singolo ramo della rete, percorso da token appartenenti a un unico colore, consentendo così una rappresentazione grafica semplificata.
+    The figures use ordinary Petri nets rather than CPN diagrams for clarity.
+    Each figure shows a single branch carrying tokens of one colour, which
+    allows a simpler graphical representation.
 \end{nota}
 
-\subsection{Conservazione della riserva durante il refill}
+\subsection{Refill resource-reservation}
 
-La sospensione per il batching non costituisce una transizione di rilascio.
-Il token di una risorsa in esecuzione rimane nel posto di lavoro della
-missione corrente. Anche il token che attende la missione successiva dello
-stesso ordine rimane nel posto di collegamento, senza tornare al posto
-comune. La risorsa viene rilasciata soltanto alla conclusione dell'ordine.
+Pausing for batching does not release the resource. A running resource's token
+stays in the working place of its current mission. A token waiting for the next
+mission of the same order stays in the linking place instead of returning to
+the common place. The resource is released only when the order is complete.
 
-Il refill modifica le ammissioni e, per i nuovi ordini, l'associazione alla
-risorsa. Non ricostruisce la rete, non reinizializza la marcatura e non
-ricalcola il percorso di una missione già avviata. L'avvio richiede
-congiuntamente l'ammissione della missione e l'abilitazione della relativa
-transizione nella CTPN.
+Refill changes mission admission and assigns resources to new orders. It does
+not rebuild the net, reset the marking, or recalculate the path of a mission
+already in progress. A mission can start only if it has been admitted and its
+CTPN transition is enabled.
 
-\section{Continuità dello stato tra batch}
+\section{State continuity between batches}
 \label{sec:progetto-tempo}
 
-\subsection{Stato persistente e risorse in esecuzione}
+\subsection{Persistent state and running resources}
 
-Tra due interventi si conservano la \textbf{marcatura}, i \textbf{proprietari degli ordini},
-le \textbf{code residue}, le \textbf{posizioni raggiunte}, i \textbf{percorsi delle missioni avviate}
-e i \textbf{relativi istanti di inizio} e \textbf{fine programmata}. Vengono conservati anche
-la cronologia dei completamenti e i valori delle deadline già fissate.
-Il contatore $C_k$ viene invece azzerato per il nuovo passaggio.
+Between batching steps, the simulation preserves the \textbf{marking},
+\textbf{order owners}, \textbf{remaining queues}, \textbf{resource positions},
+\textbf{paths of started missions}, and their \textbf{start times} and
+\textbf{scheduled completion times}. It also keeps the completion history and
+any deadlines already set. The counter $C_k$ is reset for the new pass.
 
-L'indicatore \textit{in work} rappresenta il numero di risorse con una
-missione avviata e non ancora completata nello stato sospeso. Non comprende
-le missioni soltanto in attesa. Poiché ogni risorsa può eseguire una sola
-missione alla volta, tale indicatore coincide con il numero di missioni
-attualmente in esecuzione.
+The \textit{in work} indicator counts resources with a mission that has started
+but has not yet completed in the paused state. It excludes missions that are
+only waiting. Since each resource executes one mission at a time, this also
+equals the number of running missions.
 
-\subsection{Eventi di esecuzione e soglia globale}
+\subsection{Execution events and the global threshold}
 
-L'avanzamento riprende il principio della Scheduled Event List descritto
-nella Sezione~\ref{sec:theory-sel}. Per una missione $m$ avviata
-all'istante $s_m$ e di durata $\tau_m$, il completamento è programmato a
+Execution follows the Scheduled Event List principle described in
+Section~\ref{sec:theory-sel}. A mission $m$ starting at $s_m$ with duration
+$\tau_m$ is scheduled to complete at
 \begin{equation}
-	c_m=s_m+\tau_m.
+    c_m=s_m+\tau_m.
 \end{equation}
-Il motore elabora gli eventi concorrenti e incrementa $C_k$ a ogni
-completamento. Finché la soglia non è raggiunta, una risorsa può avviare la
-successiva missione ammessa e abilitata, senza richiamare lo scheduler.
+The engine processes concurrent events and increments $C_k$ at each completion.
+Until the threshold is reached, a resource can start its next admitted and
+enabled mission without calling the scheduler.
 
-Quando $C_k=x$, il motore conserva lo stato prima di altri avvii. Gli altri
-eventi eventualmente programmati allo stesso istante vengono elaborati
-nel passaggio successivo, senza introdurre un ritardo fisico. Questa
-convenzione mantiene esatto il conteggio dei completamenti del passaggio.
+When $C_k=x$, the engine saves the state before any further starts. Other events
+scheduled at the same time are processed in the next pass, without adding a
+physical delay. This convention keeps the completion count for each pass exact.
 
-Se non rimangono nuove missioni da ammettere, il motore continua a eseguire
-il lavoro già assegnato. La simulazione termina quando tutte le missioni
-ammesse dopo la preparazione sono completate. L'ultimo passaggio può
-contenere meno di $x$ completamenti quando il lavoro residuo è inferiore
-alla soglia.
+If no new missions remain to be admitted, the engine continues with the work
+already assigned. The simulation ends when all missions admitted after data
+preparation are complete. The final pass may contain fewer than $x$ completions
+if the remaining work is below the threshold.
 
-\subsection{Decisione globale e ripartenza locale}
+\subsection{Global decision and local restart}
 
-Si distingue l'istante $T_k$ della decisione globale dal cursore temporale
-$\theta$ usato per elaborare gli eventi. Le decisioni globali mantengono
-una sequenza non decrescente; il cursore può invece tornare a un istante
-precedente per inserire lavoro sulla timeline di una risorsa.
+The global decision time $T_k$ is separate from the time cursor $\theta$ used
+to process events. Global decision times never decrease. The cursor, however,
+can return to an earlier time to insert work on a resource's timeline.
 
-Per una risorsa che ha esaurito la propria coda, sia $f_{r,k}$ il suo ultimo
-istante di completamento noto prima del refill. Il nuovo lavoro può essere
-inserito a partire da
+For a resource with an empty queue, let $f_{r,k}$ be its last known completion
+time before refill. New work can be inserted starting at
 \begin{equation}
-	a_{r,k}=f_{r,k},
-	\label{eq:ripartenza-locale}
+    a_{r,k}=f_{r,k},
+    \label{eq:ripartenza-locale}
 \end{equation}
-anche quando $a_{r,k}<T_k$. Per una risorsa mai impiegata, la frontiera
-iniziale è posta a zero. Se la risorsa conserva lavoro in coda o in
-esecuzione, le aggiunte rispettano tale lavoro e non ne anticipano
-l'esecuzione.
-
+even when $a_{r,k}<T_k$. For a resource that has not yet been used, the initial
+time is zero. If the resource still has queued or running work, new additions
+respect that work and do not move its execution to an earlier time.
 
 \begin{example}[Back-to-the-Future assignment]
-	Una risorsa che ha terminato la coda a $80\,\mathrm{s}$ può
-	ricevere il blocco successivo a partire da tale istante anche se la
-	decisione globale viene registrata a $120\,\mathrm{s}$. Il nuovo lavoro
-	viene inserito nell'intervallo temporale precedentemente rimasto libero.
+    A resource that emptied its queue at $80\,\mathrm{s}$ can receive its next
+    batch starting at that time, even if the global decision is recorded at
+    $120\,\mathrm{s}$. New work fills a previously empty part of its timeline.
 \end{example}
 
-\noindent Il ritorno temporale non annulla gli eventi già consolidati sulle altre
-risorse. Ciascuna mantiene la propria frontiera: non si avviano due
-missioni contemporaneamente sulla stessa risorsa e non si modifica una
-missione già in work. In particolare, il suo istante di completamento
-$c_m$ rimane quello definito all'avvio.
+\noindent Moving the cursor back does not undo events already fixed on other
+resources. Each resource keeps its own progress: two missions cannot run at the
+same time on one resource, and a mission already in work is not changed.
+In particular, its completion time $c_m$ remains the value set when it started.
 
-Gli eventi aggiunti nel passato appartengono al nuovo passaggio di
-elaborazione. Se il cursore raggiunge il target in un istante
-$\theta_k^{\mathrm{stop}}$ precedente all'ultima decisione globale,
-l'istante della decisione seguente è registrato come
+Events inserted at earlier times belong to the new processing pass. If the
+cursor reaches the completion target at a time $\theta_k^{\mathrm{stop}}$
+before the latest global decision, the next decision time is recorded as
 \begin{equation}
-	T_{k+1}=\max\{T_k,\theta_k^{\mathrm{stop}}\}.
-	\label{eq:decisione-globale}
+    T_{k+1}=\max\{T_k,\theta_k^{\mathrm{stop}}\}.
+    \label{eq:decisione-globale}
 \end{equation}
-Questa distinzione evita di attribuire a tutte le risorse un unico istante
-di ripartenza e separa la sequenza delle decisioni dalla timeline finale.
+This avoids imposing a single restart time on all resources and separates the
+decision sequence from the final timeline.
 
 \begin{nota}
-	La procedura costruisce una pianificazione offline a partire da ordini
-	noti. L'inserimento retroattivo completa la timeline simulata; non descrive
-	un comando che un sistema fisico potrebbe eseguire nel passato. Le durate
-	di calcolo del programma non vengono sommate ai tempi operativi simulati.
+    The procedure builds an offline schedule from known orders. Inserting work
+    at earlier times fills the simulated timeline; it does not represent a
+    command that a physical system could execute in the past. Program computing
+    time is not added to simulated operating time.
 \end{nota}
 
-
-
 \begin{comment}
-	
-	\subsection{Procedura di batching}
-	
-	La sequenza operativa può essere riassunta nei seguenti passi:
-	\begin{enumerate}
-		\item conservare tutte le missioni ammesse non ancora completate e lo
-		stato delle risorse;
-		\item aggiungere fino a $x$ nuove missioni, privilegiando le continuazioni
-		degli ordini già assegnati e mantenendo l'ingresso per i nuovi ordini;
-		\item per le risorse con coda esaurita, riprendere dalla rispettiva
-		frontiera temporale; mantenere le esecuzioni delle altre risorse;
-		\item elaborare le missioni ammesse tramite la CTPN e i percorsi A*,
-		contando globalmente i completamenti;
-		\item alla soglia $x$, sospendere l'elaborazione, registrare lo stato e
-		ripetere il procedimento; terminare quando tutto il lavoro è concluso.
-	\end{enumerate}
-	
-	
+    \subsection{Batching procedure}
+
+    The procedure can be summarized as follows:
+    \begin{enumerate}
+        \item Keep all admitted but unfinished missions and the resource state.
+        \item Add up to $x$ new missions, giving priority to the continuation of
+        assigned orders and keeping input order for new orders.
+        \item For resources with empty queues, resume from their local completion
+        times; preserve the running missions of other resources.
+        \item Execute admitted missions through the CTPN and A* paths, counting
+        completions globally.
+        \item At threshold $x$, pause, save the state, and repeat. Stop when all
+        work is complete.
+    \end{enumerate}
 \end{comment}
 
-
-\section{Stima euclidea delle deadline}
+\section{Deadline estimate}
 \label{sec:stima-deadline-euclidea}
-\label{sec:stima-deadline-manhattan} % Alias per i riferimenti preesistenti.
+\label{sec:stima-deadline-manhattan} % Alias kept for existing references.
 
-Le scadenze applicano le definizioni della
-Sezione~\ref{sec:theory-deadlines}. Sono indicatori osservativi, calcolati
-per confrontare la previsione geometrica con i tempi di completamento.
-Non vengono utilizzate per scegliere ordini, dimensionare code, assegnare
-risorse o attivare refill.
+Deadlines follow the definitions in Section~\ref{sec:theory-deadlines}.
+They are evaluation indicators used to compare the geometric estimate with
+completion times. They do not select orders, size queues, assign resources,
+or trigger refills.
 
-La deadline dell'ordine viene fissata al primo avvio effettivo di una sua
-missione. Non decorre dall'assegnazione del proprietario: l'attesa dovuta
-agli ordini precedenti non consuma il budget del nuovo ordine. Tutte le
-scadenze cumulative dell'ordine vengono congelate insieme e non vengono
-ricalcolate durante i refill o la ripresa delle missioni successive.
+An order's deadline is set when its first mission actually starts. It is not
+measured from owner assignment: waiting for earlier orders does not use up the
+new order's time allowance. All cumulative deadlines for the order are fixed
+together and are not recalculated during refills or when later missions resume.
 
-\subsection{Sequenza e distanza stimata}
+\subsection{Sequence and estimated distance}
 
-Si considera la sequenza $\pi_o$ delle missioni ammesse dell'ordine,
-ordinata secondo le precedenze interne. Gli estremi $F_i$ e $T_i$ sono gli
-indici della griglia corrispondenti a FROM e TO dopo normalizzazione e
-arrotondamento. La previsione usa
+Consider the sequence $\pi_o$ of admitted missions, sorted by internal precedence.
+The endpoints $F_i$ and $T_i$ are the grid indices of FROM and TO after
+normalization and rounding. The estimate uses
 \begin{equation}
-	d_E(p,q)=\sqrt{(x_p-x_q)^2+(y_p-y_q)^2}.
-	\label{eq:manhattan-distance} % Nome storico mantenuto per compatibilita.
+    d_E(p,q)=\sqrt{(x_p-x_q)^2+(y_p-y_q)^2}.
+    \label{eq:manhattan-distance} % Historical label kept for compatibility.
 \end{equation}
-Sia $P_r$ la posizione della risorsa prima del primo avvio dell'ordine.
-Si pone $Q_1=P_r$ e $Q_i=T_{i-1}$ per $i>1$; quando la risorsa non ha una
-posizione precedente, si assume $Q_1=F_1$. La distanza prevista per ciascuna
-missione è
+Let $P_r$ be the resource position before the order starts. Set $Q_1=P_r$ and
+$Q_i=T_{i-1}$ for $i>1$. If the resource has no previous position, set $Q_1=F_1$.
+The estimated distance for each mission is
 \begin{equation}
-	\widehat\ell_{o,i}=d_E(Q_i,F_i)+d_E(F_i,T_i).
-	\label{eq:estimated-order-distance}
+    \widehat\ell_{o,i}=d_E(Q_i,F_i)+d_E(F_i,T_i).
+    \label{eq:estimated-order-distance}
 \end{equation}
-Si includono così l'avvicinamento iniziale e gli spostamenti tra le
-missioni consecutive. La previsione non esegue A* e non applica le
-correzioni verso celle libere e raggiungibili effettuate dal planner.\footnote{La distanza euclidea è calcolata con la stessa formula utilizzata
-	per stimare il tempo medio di percorrenza nell'algoritmo A*.}
+This includes the initial approach and travel between consecutive missions.
+The estimate does not run A* or apply the planner's corrections to free and
+reachable cells.\footnote{Euclidean distance is calculated using the same formula
+used to estimate average travel time in the A* algorithm.}
 
-Con velocità $v_c=5.5$ celle al secondo, maggiorazione $\alpha=0.20$,
-contributo accessorio $\tau_f=60\,\mathrm{s}$ e margine
-$\delta_m=30\,\mathrm{s}$ per missione, la durata prevista è
+With speed $v_c=5.5$ cells per second, an allowance $\alpha=0.20$, a fixed
+additional time $\tau_f=60\,\mathrm{s}$, and a margin
+$\delta_m=30\,\mathrm{s}$ per mission, the estimated duration is
 \begin{equation}
-	\widehat\tau_{o,i}=
-	\operatorname{round}\!\left(
-	\frac{\widehat\ell_{o,i}}{v_c}(1+\alpha)\right)
-	+\tau_f+\delta_m.
-	\label{eq:stima_scadenze}
+    \widehat\tau_{o,i}=
+    \operatorname{round}\!\left(
+    \frac{\widehat\ell_{o,i}}{v_c}(1+\alpha)\right)
+    +\tau_f+\delta_m.
+    \label{eq:stima_scadenze}
 \end{equation}
-Il margine è un parametro configurabile del modello delle deadline.
-L'arrotondamento viene applicato a ogni missione prima della somma e il
-margine viene aggiunto per missione, non una sola volta per ordine.
-La durata prevista dell'ordine è
+The margin is a configurable parameter of the deadline model. Each mission's
+estimate is rounded before summation, and the margin is added per mission,
+not once per order. The estimated order duration is
 \begin{equation}
-	\widehat D_o=\sum_{i=1}^{n_o^{\mathrm{adm}}}\widehat\tau_{o,i}.
-	\label{eq:estimated-order-duration}
+    \widehat D_o=\sum_{i=1}^{n_o^{\mathrm{adm}}}\widehat\tau_{o,i}.
+    \label{eq:estimated-order-duration}
 \end{equation}
 
-Sia $S_o$ l'istante del primo avvio dell'ordine. Le deadline cumulative
-sono
+Let $S_o$ be the time when the order first starts. Its cumulative deadlines are
 \begin{equation}
-	d_{o,i}=S_o+\sum_{j=1}^{i}\widehat\tau_{o,j},\qquad
-	d_o=S_o+\widehat D_o.
-	\label{eq:estimated-order-deadline}
+    d_{o,i}=S_o+\sum_{j=1}^{i}\widehat\tau_{o,j},\qquad
+    d_o=S_o+\widehat D_o.
+    \label{eq:estimated-order-deadline}
 \end{equation}
-La deadline dell'ordine coincide con quella dell'ultima missione.
+The order deadline is the deadline of its final mission.
 
-\subsection{Separazione tra previsione ed esecuzione}
+\begin{nota}
+	Geometry-based deadline estimates were introduced because a fixed
+	allowance of 180 seconds per mission did not adequately capture
+	the variability in execution times. Although the mean and median
+	were approximately 180 seconds, individual durations varied
+	considerably: some missions took about 60 seconds, whereas others
+	exceeded seven minutes. A single nominal value could therefore
+	overestimate the time required by shorter missions and underestimate
+	that required by longer ones.
+\end{nota}
 
-La stima euclidea non modifica la marcatura, l'abilitazione delle
-transizioni o la scelta del percorso. La durata simulata deriva dai punti
-restituiti da A*, mentre la previsione usa distanze dirette tra gli estremi
-richiesti. Le due grandezze hanno quindi significati differenti anche
-quando condividono alcuni coefficienti temporali.
+\subsection{Estimate and execution}
 
-Ostacoli, deviazioni, correzioni delle coordinate e arrotondamenti possono
-produrre scostamenti tra durata prevista e simulata. La previsione non
-costituisce un limite inferiore o superiore garantito. La componente umana
-non è rappresentata da un modello stocastico esplicito; i margini temporali
-sono parametri di calibrazione e non sostituiscono la validazione sui dati
-operativi.
+The Euclidean estimate does not change the marking, transition enabling, or
+path choice. Simulated duration comes from the points returned by A*, while
+the estimate uses direct distances between the requested endpoints. The two
+quantities therefore have different meanings, even when they share some time
+coefficients.
 
+Obstacles, detours, coordinate corrections, and rounding can create differences
+between estimated and simulated durations. The estimate is not a guaranteed
+lower or upper bound. Human behaviour is not described by an explicit stochastic
+model. Time margins are calibration parameters and do not replace validation
+against operational data.
 
 \begin{comment}
-	
-	\section{Modello spaziale e ammissibilità dei percorsi}
-	\label{sec:progetto-spazio}
-	
-	\subsection{Mappa e normalizzazione delle posizioni}
-	
-	Nella preparazione dei dati, ogni coordinata maggiore di 999 viene prima
-	divisa per 1000 e arrotondata, secondo la convenzione adottata per correggere
-	l'importazione dei separatori decimali. Questa regola va verificata sui dati
-	di ingresso, poiché non distingue un errore di scala da una coordinata
-	effettivamente molto distante.
-	
-	L'ambiente è rappresentato da una griglia di occupazione con celle libere e
-	celle ostacolo. Per il dominio rettangolare delle coordinate operative
-	\begin{equation}
-		\Omega=[1,N_X]\times[1,N_Y],
-	\end{equation}
-	un punto finito $q=(X,Y)$ esterno al dominio viene riportato al punto più
-	vicino entro i limiti mediante la proiezione
-	\begin{equation}
-		\Pi_\Omega(q)=
-		\left(\min\{N_X,\max\{1,X\}\},
-		\min\{N_Y,\max\{1,Y\}\}\right).
-	\end{equation}
-	Questa scelta consente di trattare coordinate esterne senza eliminare
-	immediatamente la missione. La proiezione garantisce soltanto l'appartenenza
-	al dominio: il punto ottenuto può ancora essere occupato o scollegato dalla
-	zona percorribile. Una coordinata non finita non identifica invece un punto
-	proiettabile e comporta l'esclusione preliminare della missione.
-	
-	Le coordinate operative vengono trasformate in indici della griglia attraverso
-	una convenzione coerente con il verso degli assi e con i bordi del dominio.
-	Nella convenzione adottata X identifica la direzione delle righe e Y quella
-	delle colonne con verso invertito. L'appartenenza al dominio deve essere
-	preservata anche dalla trasformazione: un punto sul bordo non deve produrre
-	un indice esterno alla matrice.
-	
-	
-	\begin{nota}
-		Le coordinate finite esterne alla mappa vengono riportate entro i suoi
-		limiti. Questa correzione non aggiunge automaticamente un tempo per il
-		tragitto esterno omesso. Un'eventuale compensazione deve essere calibrata
-		e introdotta esplicitamente; non è una funzionalità attiva della CTPN.
-	\end{nota}
-	
-	\subsection{Celle libere e componenti raggiungibili}
-	
-	Si consideri il grafo $G=(V,E)$ associato alla griglia, dove $V$ comprende le
-	celle libere ed $E$ collega le celle adiacenti secondo la modalità di movimento
-	ammessa. Il vicinato può comprendere quattro oppure otto direzioni e deve
-	essere lo stesso nella ricerca delle celle raggiungibili e nella pianificazione.
-	
-	Per una cella libera $s$, si indica con $\mathcal C(s)$ la componente connessa
-	che la contiene. Quando si deve sostituire un punto richiesto $q$ con una
-	cella raggiungibile da $s$, si adotta la regola
-	\begin{equation}
-		q^*=\mathop{\arg\min}_{v\in\mathcal C(s)}\|v-q\|_2^2.
-		\label{eq:progetto-cella-raggiungibile}
-	\end{equation}
-	A parità di distanza si applica un criterio deterministico per riga e
-	successivamente per colonna. La distanza è misurata dal punto richiesto;
-	non coincide con la lunghezza del percorso dalla risorsa.
-	
-	La distinzione tra cella libera e cella raggiungibile è essenziale. Una
-	destinazione può essere libera ma appartenere a una regione isolata. Per
-	questo motivo il TO viene sempre valutato rispetto alla componente del FROM
-	effettivo: se vi appartiene rimane invariato, altrimenti viene ridefinito
-	secondo l'Equazione~\ref{eq:progetto-cella-raggiungibile}.
-	
-	La ridefinizione è una regola geometrica del modello. Essa non garantisce
-	che la cella sostitutiva rappresenti la medesima postazione logistica reale;
-	la coerenza delle posizioni con il magazzino fisico rimane un requisito di
-	validazione dei dati.
-	
-	\subsection{Continuità della risorsa e pianificazione delle tratte}
-	
-	Per ogni missione si pianificano due tratte: dalla posizione corrente della
-	risorsa al FROM e dal FROM al TO. La seconda tratta parte dal punto
-	effettivamente raggiunto con la prima, così da mantenere la continuità del
-	movimento. Dopo il completamento, il TO effettivo diventa la posizione
-	iniziale della risorsa per la missione successiva.
-	
-	Una risorsa che non ha ancora lavorato viene inizialmente collocata presso
-	il FROM della sua prima missione; non viene modellato un trasferimento da un
-	deposito comune. Se tale posizione è occupata, si individua la cella libera
-	più vicina. Un FROM occupato viene corretto nella componente raggiungibile
-	dalla posizione della risorsa. Per le missioni considerate si assume che un FROM libero sia raggiungibile
-	dalla posizione della risorsa. Il planner non ne modifica automaticamente
-	la posizione quando la cella risulta libera.
-	
-	I percorsi vengono ricercati mediante A* sulla mappa statica, secondo il
-	principio di ricerca euristica introdotto in~\cite{hart1968formal}. Non viene
-	modellata l'occupazione spazio-temporale dovuta agli altri mezzi; la
-	concorrenza temporale tra risorse non implica pertanto una verifica delle
-	collisioni tra i loro percorsi.
-	
-	\subsubsection{Durata della missione}
-	
-	La durata simulata è calcolata dal percorso A* che concatena la tratta di
-	avvicinamento e quella FROM--TO. Indicando con $K_m$ il numero di punti
-	della sequenza concatenata, il modello usa
-	\begin{equation}
-		\tau_m=\operatorname{round}\!\left(\frac{K_m}{5.5}(1+0.20)\right)+60
-		\quad [\mathrm{s}].
-	\end{equation}
-	Il conteggio include i punti restituiti dalle due tratte, compreso il FROM
-	presente in entrambe. Non coincide con la somma delle lunghezze euclidee
-	degli archi: anche un passo diagonale contribuisce tramite il numero di
-	punti. Il termine fisso rappresenta le operazioni accessorie.
-	
-	La durata non comprende l'attesa precedente all'avvio e non viene limitata
-	al riferimento nominale di 180 secondi. È una stima del modello, distinta
-	sia dalla previsione usata per le deadline sia da una misura fisica.
+    \section{Spatial model and path feasibility}
+    \label{sec:progetto-spazio}
+
+    \subsection{Map and position normalization}
+
+    During data preparation, each coordinate greater than 999 is divided by
+    1000 and rounded. This convention corrects imported decimal separators.
+    The rule must be checked against the input data because it cannot distinguish
+    a scale error from a genuinely distant coordinate.
+
+    The environment is represented by an occupancy grid with free and obstacle
+    cells. For the rectangular domain of operational coordinates
+    \begin{equation}
+        \Omega=[1,N_X]\times[1,N_Y],
+    \end{equation}
+    a finite point $q=(X,Y)$ outside the domain is moved to the nearest point
+    within the limits using the projection
+    \begin{equation}
+        \Pi_\Omega(q)=
+        \left(\min\{N_X,\max\{1,X\}\},
+        \min\{N_Y,\max\{1,Y\}\}\right).
+    \end{equation}
+    This handles outside coordinates without immediately removing the mission.
+    Projection only ensures that the point is inside the domain: the resulting
+    cell may still be occupied or disconnected from the accessible area.
+    A non-finite coordinate cannot be projected and leads to the mission being
+    excluded during data preparation.
+
+    Operational coordinates are converted to grid indices using a convention
+    consistent with the axis directions and domain boundaries. In this convention,
+    X follows the row direction and Y follows the reversed column direction.
+    The conversion must also keep points inside the domain: a boundary point
+    must not produce an index outside the matrix.
+
+    \begin{nota}
+        Finite coordinates outside the map are moved within its limits. This
+        correction does not automatically add time for the omitted external
+        travel. Any compensation must be calibrated and added explicitly;
+        it is not an active CTPN feature.
+    \end{nota}
+
+    \subsection{Free cells and reachable components}
+
+    Consider the graph $G=(V,E)$ associated with the grid. The set $V$ contains
+    free cells, and $E$ connects adjacent cells according to the allowed movement
+    rules. The neighbourhood may include four or eight directions and must be
+    the same for reachability checks and path planning.
+
+    For a free cell $s$, let $\mathcal C(s)$ be its connected component.
+    When a requested point $q$ must be replaced by a cell reachable from $s$,
+    the rule is
+    \begin{equation}
+        q^*=\mathop{\arg\min}_{v\in\mathcal C(s)}\|v-q\|_2^2.
+        \label{eq:progetto-cella-raggiungibile}
+    \end{equation}
+    Equal distances are resolved deterministically by row and then by column.
+    Distance is measured from the requested point; it is not the path length
+    from the resource.
+
+    A free cell is not necessarily reachable. A destination may be free but
+    lie in an isolated area. For this reason, TO is always checked against the
+    component of the actual FROM. If it belongs to that component, it is kept;
+    otherwise, it is replaced according to
+    Equation~\ref{eq:progetto-cella-raggiungibile}.
+
+    This replacement is a geometric rule of the model. It does not guarantee
+    that the new cell represents the same physical warehouse location.
+    Consistency with the real warehouse must still be checked during data
+    validation.
+
+    \subsection{Resource continuity and route planning}
+
+    Each mission has two planned legs: from the current resource position to
+    FROM, and from FROM to TO. The second leg starts at the point actually
+    reached by the first, keeping movement continuous. After completion, the
+    actual TO becomes the resource's starting position for its next mission.
+
+    A resource that has not yet worked is initially placed at the FROM of its
+    first mission. Travel from a common depot is not modelled. If this position
+    is occupied, the nearest free cell is selected. An occupied FROM is corrected
+    within the component reachable from the resource position. For the missions
+    considered, a free FROM is assumed to be reachable from that position.
+    The planner does not automatically change FROM when its cell is free.
+
+    Paths are found with A* on the static map, following the heuristic search
+    principle introduced in~\cite{hart1968formal}. The model does not represent
+    other vehicles' occupancy over space and time. Resources running concurrently
+    therefore do not imply that collisions between their paths are checked.
+
+    \subsubsection{Mission duration}
+
+    Simulated duration is calculated from the A* path combining the approach
+    leg and the FROM--TO leg. If $K_m$ is the number of points in the combined
+    sequence, the model uses
+    \begin{equation}
+        \tau_m=\operatorname{round}\!\left(\frac{K_m}{5.5}(1+0.20)\right)+60
+        \quad [\mathrm{s}].
+    \end{equation}
+    The count includes the points returned for both legs, including FROM in
+    both. It is not the sum of Euclidean edge lengths: a diagonal step also
+    contributes through the point count. The fixed term represents additional
+    operations.
+
+    Duration excludes waiting before the start and is not capped at the nominal
+    reference of 180 seconds. It is a model estimate, separate from both the
+    deadline estimate and a physical measurement.
 \end{comment}
 
-\section{Indici di misura dei risultati}
+\section{Performance indicators}
 \label{sec:progetto-indicatori}
 
-\subsection{Completamenti, nuove ammissioni e lavoro residuo}
+\subsection{Completions, new admissions and remaining work}
 
-Il report distingue le nuove ammissioni $|\mathcal N_k|$, i residui
-$|\mathcal A_k^{-}|$ e i completamenti $C_k$ di ciascun passaggio. Le missioni conservate attraverso più
-confini non vengono conteggiate come nuove assegnazioni né come nuovi
-completamenti a ogni passaggio.
+The report distinguishes new admissions $|\mathcal N_k|$, remaining work
+$|\mathcal A_k^{-}|$, and completions $C_k$ in each pass. Missions kept across
+several boundaries are not counted again as new assignments or new completions
+in each pass.
 
-Il numero di chiamate allo scheduler misura gli interventi effettivi di
-assegnazione: ne viene eseguito al massimo uno per passaggio, mentre il
-solo svuotamento del lavoro già ammesso non richiede nuove assegnazioni.
-Si registrano anche l'istante globale della decisione, il punto di ripresa
-del cursore e gli istanti locali di inserimento. Nei grafici, le linee
-globali e i marcatori per risorsa rappresentano queste grandezze distinte.
+The number of scheduler calls measures actual assignment steps. There is at
+most one call per pass, while simply completing already admitted work requires
+no new assignment. The report also records the global decision time, the cursor
+restart time, and local insertion times. Global lines and resource markers in
+the plots represent these different quantities.
 
-\subsection{Occupazione sulla timeline finale}
+\subsection{Resource utilization on the final timeline}
 
-L'occupazione di ogni risorsa viene calcolata sulla timeline finale,
-includendo anche il lavoro inserito retroattivamente. Tra due decisioni
-successive, agli istanti $T_k$ e $T_{k+1}$, si conta solo il tempo in cui
-la risorsa lavora effettivamente all'interno dell'intervallo. Se una
-missione inizia prima o termina dopo, si considera soltanto la parte
-compresa tra questi due istanti.
+Resource busy time is calculated on the final timeline, including work inserted
+at earlier times. Between consecutive decisions at $T_k$ and $T_{k+1}$, only
+time actually spent working within that interval is counted. If a mission
+starts before or ends after the interval, only the part inside it is included.
 
-Indicando con $W_{r,k}$ il tempo occupato e con
-$L_k=T_{k+1}-T_k$ la durata dell'intervallo, il tempo inattivo e
-l'utilizzo della risorsa sono
+Let $W_{r,k}$ be the busy time and $L_k=T_{k+1}-T_k$ the interval duration.
+Resource idle time and utilization are
 \begin{equation}
-	I_{r,k}=L_k-W_{r,k},\qquad
-	U_{r,k}=\frac{W_{r,k}}{L_k}\quad\text{se }L_k>0.
-	\label{eq:occupazione-timeline}
+    I_{r,k}=L_k-W_{r,k},\qquad
+    U_{r,k}=\frac{W_{r,k}}{L_k}\quad\text{if }L_k>0.
+    \label{eq:occupazione-timeline}
 \end{equation}
-Ad esempio, una risorsa occupata per 45 minuti in un intervallo di
-un'ora ha un utilizzo del $75\%$ e 15 minuti di inattività. Per intervalli
-di durata nulla, il report pone l'utilizzo a zero.
+For example, a resource working for 45 minutes in a one-hour interval has
+$75\%$ utilization and 15 minutes of idle time. For zero-duration intervals,
+the report sets utilization to zero.
 
-Il report distingue anche il lavoro svolto entro il riferimento nominale
-$D_k=T_k+H$: questa quota, indicata con $W_{r,k}^{\mathrm{slot}}$,
-comprende solo il tempo occupato tra $T_k$ e il minore tra $T_{k+1}$ e
-$D_k$. Il relativo utilizzo è $U_{r,k}^{\mathrm{slot}}=W_{r,k}^{\mathrm{slot}}/H$.
-L'eventuale superamento del riferimento è misurato da
+The report also measures work completed within the nominal reference
+$D_k=T_k+H$. This amount, $W_{r,k}^{\mathrm{slot}}$, includes only busy time
+between $T_k$ and the earlier of $T_{k+1}$ and $D_k$. The corresponding
+utilization is $U_{r,k}^{\mathrm{slot}}=W_{r,k}^{\mathrm{slot}}/H$.
+Any overrun beyond the reference is measured by
 $\Delta_k=\max\{0,T_{k+1}-D_k\}$.
-Questi valori descrivono il risultato della simulazione e non determinano
-quando effettuare il refill.
+These values describe the simulation result and do not determine when refill
+occurs.
 
-\subsection{Slack e ritardo rispetto alle deadline}
+\subsection{Slack and delay relative to deadlines}
 
-Come definito nel capitolo precedente, il margine a completamento
-indica l'anticipo o il ritardo rispetto alla deadline, mentre la
-\textit{tardiness} misura soltanto il ritardo. Per missioni e ordini:
+As defined in the previous chapter, the completion margin shows how early or
+late completion is relative to the deadline, while \textit{tardiness} measures
+only delay. For missions and orders,
 \begin{equation}
-	\begin{aligned}
-		\sigma_{o,i}&=d_{o,i}-c_{o,i}, &
-		T_{o,i}&=\max\{0,c_{o,i}-d_{o,i}\},\\
-		\sigma_o&=d_o-C_o, &
-		T_o&=\max\{0,C_o-d_o\}.
-	\end{aligned}
+    \begin{aligned}
+        \sigma_{o,i}&=d_{o,i}-c_{o,i}, &
+        T_{o,i}&=\max\{0,c_{o,i}-d_{o,i}\},\\
+        \sigma_o&=d_o-C_o, &
+        T_o&=\max\{0,C_o-d_o\}.
+    \end{aligned}
 \end{equation}
-Un margine positivo indica anticipo, uno negativo ritardo. Un ritardo
-su una missione può essere recuperato prima della conclusione dell'ordine.
-Questi indicatori valutano il rispetto delle deadline senza modificare
-le decisioni dello scheduler.
-
+A positive margin means early completion; a negative margin means delay.
+A mission's delay can be recovered before the order finishes. These indicators
+assess whether deadlines are met without changing scheduler decisions.
