@@ -14,6 +14,7 @@
 \usepackage{algorithm}
 \usepackage{algorithmicx}
 \usepackage{algpseudocode}
+\usepackage{comment}
 \usepackage{multirow}
 \newcommand\tab[1][1cm]{\hspace*{#1}}
 \usepackage{amsmath}
@@ -45,6 +46,26 @@
 	fontupper=\small,
 	parbox=false
 }
+
+\definecolor{exampleceleste}{RGB}{55, 155, 255}
+
+\newtcolorbox{example}[1][]{
+	empty,
+	title={\textbf{Example: #1}},
+	attach boxed title to top left,
+	boxed title style={empty, size=minimal, bottom=1.5mm},
+	coltitle=exampleceleste,
+	fonttitle=\bfseries\itshape,
+	borderline west={2.5pt}{0pt}{exampleceleste!35},
+	colback=white,
+	left=4mm,
+	top=0mm,
+	bottom=0mm,
+	fontupper=\small,
+	parbox=false
+}
+
+
 \renewcommand{\listfigurename}{Figure Listing}
 \renewcommand{\lstlistlistingname}{Code Listing}
 
@@ -127,14 +148,19 @@ sorting=nty
     \vspace{0.5cm}
     
 \vfill
-    {\scshape\large Master's Degree in Computer Engineering \par}
-    \vspace{1.0cm}
     
     
     \includegraphics[width=0.5\textwidth]{Misc/logo_standard (1).png}\par
     \vspace{0.5cm} % Add your university's logo here
-    {\huge\bfseries Industrial Workforce Management: a practical usage of Petri Nets for balanced mission assignment\par}
+    
+    
+    {\scshape\large Master's Degree in Computer Engineering \par}
     \vspace{1.0cm}
+    \vfill
+    {\huge\bfseries Resource-Constrained Warehouse Scheduling with Order-Level Assignment Using Colored Timed Petri Nets\par}
+    \vspace{1.0cm}
+    
+    
 
     \vfill
 
@@ -142,8 +168,9 @@ sorting=nty
         \large
         \begin{tabbing}
         	\hspace{8cm} \= \kill
-        	\textbf{Teacher} \> \textbf{Student} \\
+        	\textbf{Supervisor} \> \textbf{Candidate} \\
         	Ch.mo Prof. Francesco Basile \> Gabriele Imparato \\
+        	\> \textbf{Serial Nbr.} 0622702508\\
         \end{tabbing}
     \end{flushleft}
 
@@ -161,13 +188,15 @@ sorting=nty
 \chapter{Theoretical foundations and Modeling approaches}
 \input{cap2_teoria.tex}
 
-%\chapter{Fase ingegneristica: Discrete Scheduling MPC for Warehouse Resources}
+
 \chapter{Original contribute to the problem}
 \input{cap3_progettazione.tex}
 
-\chapter{Development phase}
+\chapter{Experimental Results}
+\input{cap5_results.tex}
 
-\chapter{Conclusione}
+
+\chapter{Conclusions}
 
 
 
